@@ -1,0 +1,19 @@
+{
+  "name": "agent-visibility",
+  "version": "0.1.0",
+  "description": "Real-time debug dashboard for multi-agent AI systems — topology graph, LLM turn inspector, tool call traces, memory panel",
+  "main": "src/server.js",
+  "bin": {
+    "visibility": "bin/visibility.js"
+  },
+  "scripts": {
+    "start": "node bin/visibility.js",
+    "start:mcp": "node bin/visibility.js --mcp",
+    "dev": "node bin/visibility.js --no-open"
+  },
+  "keywords": ["agent", "llm", "debug", "visibility", "observability", "mcp", "multi-agent"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}

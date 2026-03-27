@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Agent Visibility</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0d0f12;--bg2:#161820;--bg3:#1e2028;--border:rgba(255,255,255,.08);--border2:rgba(255,255,255,.14);
+  --text:#e2e4e8;--muted:#5a6070;--purple:#8b7cf8;--teal:#2dd4b0;--amber:#f59e0b;--coral:#f87171;--blue:#60a5fa;--green:#4ade80;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--bg);color:var(--text);font-family:'Inter',sans-serif;font-size:13px;overflow:hidden}
+
+/* ── Shell ── */
+.shell{display:grid;grid-template-rows:48px 1fr;height:100vh}
+
+/* ── Top bar ── */
+.bar{display:flex;align-items:center;gap:12px;padding:0 20px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.logo{font-family:'IBM Plex Mono',monospace;font-size:13px;font-weight:500;color:var(--purple);letter-spacing:-.01em}
+.goal{flex:1;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:0 12px}
+.badge{font-size:11px;padding:3px 9px;border-radius:12px;border:1px solid var(--border);color:var(--muted);font-weight:500}
+.badge.live{border-color:var(--green);color:var(--green)}.badge.dead{border-color:var(--coral);color:var(--coral)}
+.badge.running{border-color:var(--teal);color:var(--teal)}.badge.done{border-color:var(--green);color:var(--green)}.badge.error{border-color:var(--coral);color:var(--coral)}
+.btn-reset{background:var(--bg3);color:var(--muted);border:1px solid var(--border2);border-radius:7px;padding:5px 12px;font-size:12px;font-family:'Inter',sans-serif;cursor:pointer}
+.btn-reset:hover{color:var(--text);border-color:var(--border2)}
+
+/* ── Main grid ── */
+.grid{display:grid;grid-template-columns:200px 1fr;height:100%;overflow:hidden}
+
+/* ── Left sidebar ── */
+.sidebar{display:flex;flex-direction:column;border-right:1px solid var(--border);overflow:hidden}
+.section{padding:12px 14px;border-bottom:1px solid var(--border)}
+.section-label{font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+
+/* scenario buttons */
+.demo-btn{display:block;width:100%;text-align:left;background:transparent;border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer;color:var(--muted);font-family:'Inter',sans-serif;font-size:12px;transition:border-color .15s,color .15s}
+.demo-btn:last-child{margin-bottom:0}
+.demo-btn:hover{border-color:var(--purple);color:var(--text)}
+.demo-btn strong{display:block;font-size:12px;font-weight:500;color:var(--text);margin-bottom:1px}
+.demo-btn span{font-size:10px}
+
+/* agents list */
+.agents-scroll{flex:1;overflow-y:auto;padding:10px 14px}
+.agents-scroll::-webkit-scrollbar{width:2px}.agents-scroll::-webkit-scrollbar-thumb{background:var(--bg3)}
+.agent-row{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;margin-bottom:4px;border:1px solid transparent;transition:border-color .2s,background .2s}
+.agent-row.idle{border-color:var(--border)}.agent-row.registered{border-color:rgba(139,124,248,.25)}
+.agent-row.running{border-color:var(--teal);background:rgba(45,212,176,.04)}.agent-row.active{border-color:var(--purple);background:rgba(139,124,248,.04)}
+.agent-row.done{border-color:rgba(74,222,128,.3)}.agent-row.error{border-color:var(--coral)}
+.agent-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;background:var(--muted)}
+.agent-row.running .agent-dot{background:var(--teal)}.agent-row.active .agent-dot{background:var(--purple)}
+.agent-row.done .agent-dot{background:var(--green)}.agent-row.error .agent-dot{background:var(--coral)}
+.agent-row.registered .agent-dot{background:rgba(139,124,248,.6)}
+.agent-name{font-size:12px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-role{font-size:10px;padding:1px 5px;border-radius:4px;white-space:nowrap;flex-shrink:0}
+
+/* ── Right panel ── */
+.main{display:flex;flex-direction:column;overflow:hidden}
+
+/* canvas */
+.canvas-wrap{position:relative;flex-shrink:0;border-bottom:1px solid var(--border)}
+canvas{display:block;width:100%}
+.tool-overlay{position:absolute;background:var(--bg2);border:1px solid var(--border2);border-radius:9px;min-width:210px;max-width:270px;pointer-events:none;z-index:10;box-shadow:0 6px 20px rgba(0,0,0,.5);overflow:hidden}
+.tool-overlay .tool-blocks{padding:6px 6px 4px 6px}
+.tool-overlay-hdr{display:flex;align-items:center;gap:6px;padding:6px 8px 5px;border-bottom:1px solid var(--border)}
+.tool-overlay-hdr .tool-kind{font-size:10px}
+.tool-overlay-hdr .tool-seq{font-size:10px;color:var(--muted);font-family:'IBM Plex Mono',monospace}
+.tool-overlay-hdr .tool-agent-name{font-size:11px;font-weight:600;flex:1}
+
+/* tabs */
+.tabs{display:flex;border-bottom:1px solid var(--border);flex-shrink:0;background:var(--bg2)}
+.tab{font-size:12px;font-weight:500;padding:9px 16px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .15s}
+.tab:hover{color:var(--text)}.tab.active{color:var(--text);border-bottom-color:var(--purple)}
+.tab-panel{display:none;flex:1;overflow-y:auto;padding:12px 14px}
+.tab-panel::-webkit-scrollbar{width:2px}.tab-panel::-webkit-scrollbar-thumb{background:var(--bg3)}
+.tab-panel.active{display:block}
+.empty{color:var(--muted);font-size:12px;font-style:italic;padding:8px 0}
+
+/* ── Log tab ── */
+.log-row{display:flex;gap:8px;align-items:flex-start;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.log-row:last-child{border-bottom:none}
+.log-tag{font-size:10px;padding:2px 6px;border-radius:4px;white-space:nowrap;flex-shrink:0;margin-top:1px;font-weight:500}
+.log-msg{font-size:12px;line-height:1.45;color:#c8cad0;flex:1;word-break:break-word}
+.log-time{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);white-space:nowrap;flex-shrink:0}
+
+/* ── Tools tab ── */
+.tool-item{border-bottom:1px solid rgba(255,255,255,.04)}
+.tool-item:last-child{border-bottom:none}
+.tool-item summary{display:flex;gap:8px;align-items:center;padding:6px 2px;cursor:pointer;list-style:none;user-select:none;outline:none}
+.tool-item summary::-webkit-details-marker{display:none}
+.tool-chevron{font-size:8px;color:var(--muted);transition:transform .15s;flex-shrink:0}
+.tool-item[open] .tool-chevron{transform:rotate(90deg)}
+.tool-seq{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);flex-shrink:0;width:22px;text-align:right}
+.tool-kind{font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;white-space:nowrap;flex-shrink:0}
+.tool-agent-name{font-size:12px;font-weight:500;white-space:nowrap;flex-shrink:0}
+.tool-preview{font-size:12px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tool-lat{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted);white-space:nowrap;flex-shrink:0}
+.tool-body{border-top:1px solid rgba(255,255,255,.04);padding:6px 4px 8px 0}
+.tool-blocks{display:flex;flex-wrap:wrap;gap:5px;padding:4px 4px 2px 36px}
+.tool-block{background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:5px 9px;min-width:90px}
+.tool-block.full{flex-basis:100%;min-width:0}
+.tb-label{font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);display:block;margin-bottom:2px}
+.tb-val{font-size:12px;color:var(--text);line-height:1.45;word-break:break-word}
+.tb-val b{font-weight:600}
+
+/* ── LLM conversation thread ── */
+.llm-thread{display:flex;flex-direction:column;gap:3px;padding:4px 4px 2px 36px}
+.llm-turn{border-radius:5px;padding:5px 8px;border:1px solid rgba(255,255,255,.05)}
+.llm-turn.system{background:rgba(255,255,255,.02)}
+.llm-turn.user{background:rgba(96,165,250,.05);border-color:rgba(96,165,250,.12)}
+.llm-turn.assistant{background:rgba(139,124,248,.05);border-color:rgba(139,124,248,.12)}
+.llm-turn.tool{background:rgba(45,212,176,.04);border-color:rgba(45,212,176,.10)}
+.llm-role{font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;margin-bottom:2px}
+.llm-turn.system .llm-role{color:var(--muted)}
+.llm-turn.user .llm-role{color:var(--blue)}
+.llm-turn.assistant .llm-role{color:var(--purple)}
+.llm-turn.tool .llm-role{color:var(--teal)}
+.llm-content{font-size:11px;line-height:1.5;color:var(--text);word-break:break-word;white-space:pre-wrap}
+.llm-response{border-top:1px solid rgba(255,255,255,.06);padding:6px 8px 6px 36px}
+.llm-section-label{font-size:9px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+.llm-response .llm-section-label{color:var(--purple)}
+.llm-thinking .llm-section-label{color:var(--amber)}
+.llm-response-text,.llm-thinking-text{font-size:11px;line-height:1.5;color:var(--text);white-space:pre-wrap;word-break:break-word}
+.llm-thinking{border-top:1px solid rgba(255,255,255,.06);padding:6px 8px 6px 36px}
+.llm-thinking-text{color:var(--muted);font-style:italic}
+
+/* ── Memory tab ── */
+.mem-card{border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:6px;transition:border-color .3s,background .3s}
+@keyframes fw{0%{border-color:var(--teal);background:rgba(45,212,176,.07)}100%{border-color:var(--border);background:transparent}}
+@keyframes fr{0%{border-color:var(--blue);background:rgba(96,165,250,.07)}100%{border-color:var(--border);background:transparent}}
+.mem-card.fw{animation:fw .9s ease-out forwards}.mem-card.fr{animation:fr .6s ease-out forwards}
+.mem-key{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:500;color:var(--muted);margin-bottom:3px;text-transform:uppercase;letter-spacing:.04em}
+.mem-val{font-size:12px;line-height:1.5;color:var(--text)}
+.mem-val b{font-weight:600}
+
+/* ── Plan tab ── */
+.plan-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.plan-row:last-child{border-bottom:none}
+.plan-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.plan-agent{font-size:11px;font-weight:600;width:80px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plan-task{font-size:12px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.plan-done{font-size:10px;padding:1px 6px;border-radius:4px;background:rgba(74,222,128,.1);color:var(--green);white-space:nowrap}
+
+/* ── Metrics bar ── */
+.metrics{display:flex;border-top:1px solid var(--border);flex-shrink:0;background:var(--bg2)}
+.metric{flex:1;padding:8px 14px;border-right:1px solid var(--border)}.metric:last-child{border-right:none}
+.metric-label{font-size:10px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin-bottom:2px}
+.metric-val{font-family:'IBM Plex Mono',monospace;font-size:16px;font-weight:500}
+
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{width:12px;height:12px;border:1.5px solid var(--border2);border-top-color:var(--purple);border-radius:50%;animation:spin .6s linear infinite;display:none;flex-shrink:0}
+.spinner.on{display:inline-block}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- top bar -->
+<div class="bar">
+  <div class="logo">agent.visibility</div>
+  <div class="goal" id="goal-text">waiting for agents…</div>
+  <span class="spinner" id="spinner"></span>
+  <span class="badge" id="run-status">idle</span>
+  <span class="badge dead" id="conn-badge">connecting…</span>
+  <button class="btn-reset" onclick="doReset()">Reset</button>
+</div>
+
+<div class="grid">
+
+  <!-- sidebar -->
+  <div class="sidebar">
+    <div class="section">
+      <div class="section-label">Demo scenarios</div>
+      <button class="demo-btn" onclick="emulate('research_code')">
+        <strong>Research + code</strong>
+        <span>4 agents · clean run</span>
+      </button>
+      <button class="demo-btn" onclick="emulate('critic_retry')">
+        <strong>Critic retry loop</strong>
+        <span>3 agents · fail → retry → pass</span>
+      </button>
+      <button class="demo-btn" onclick="emulate('memory_overflow')">
+        <strong>Memory overflow</strong>
+        <span>4 agents · context truncation</span>
+      </button>
+    </div>
+    <div class="section" style="padding-bottom:6px">
+      <div class="section-label">Agents</div>
+    </div>
+    <div class="agents-scroll" id="agents-list">
+      <div class="empty">Agents appear after registration</div>
+    </div>
+  </div>
+
+  <!-- main panel -->
+  <div class="main">
+    <div class="canvas-wrap"><canvas id="fc" height="260"></canvas></div>
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab(event,'log')">Log</div>
+      <div class="tab" onclick="switchTab(event,'tools')">Tools</div>
+      <div class="tab" onclick="switchTab(event,'mem')">Memory</div>
+      <div class="tab" onclick="switchTab(event,'plan')">Plan</div>
+    </div>
+    <div class="tab-panel active" id="tp-log"><div class="empty">Events stream here during a run</div></div>
+    <div class="tab-panel" id="tp-tools"><div class="empty">Embeddings, retrievals, tool calls and LLM generations appear here</div></div>
+    <div class="tab-panel" id="tp-mem"><div id="mem-grid"></div></div>
+    <div class="tab-panel" id="tp-plan"><div id="plan-list"><div class="empty">Plan appears after orchestrator runs</div></div></div>
+    <div class="metrics">
+      <div class="metric"><div class="metric-label">Steps</div><div class="metric-val" id="m-steps">0</div></div>
+      <div class="metric"><div class="metric-label">Tokens</div><div class="metric-val" id="m-tokens">0</div></div>
+      <div class="metric"><div class="metric-label">Elapsed</div><div class="metric-val" id="m-elapsed">—</div></div>
+      <div class="metric"><div class="metric-label">Retries</div><div class="metric-val" id="m-retries">0</div></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const SERVER = location.origin;
+
+const ROLE_COLORS = {
+  orchestrator:'#8b7cf8', researcher:'#2dd4b0', coder:'#60a5fa',
+  critic:'#f59e0b', synthesiser:'#60a5fa', worker:'#2dd4b0',
+};
+
+let S = { registry:{}, agents:{}, memory:{}, events:[], plan:[], internals:[], metrics:{steps:0,tokens:0,retries:0}, status:'idle', goal:'', startedAt:null, lastArrow:null };
+let es = null, elapsedTimer = null, toolSeq = 0, selectedToolItem = null, flowPos = {}, expandedAgent = null;
+
+// ── Canvas ─────────────────────────────────────────────────────────────────────
+const fc = document.getElementById('fc');
+const ctx = fc.getContext('2d');
+function initCanvas(){ fc.width = fc.parentElement.clientWidth; drawFlow(); }
+window.addEventListener('resize', initCanvas);
+
+// click agent node → expand / collapse sub-nodes
+fc.addEventListener('click', e => {
+  if (!Object.keys(S.registry).length) return;
+  const rect = fc.getBoundingClientRect();
+  const scaleX = fc.width / fc.clientWidth, scaleY = fc.height / fc.clientHeight;
+  const mx = (e.clientX - rect.left) * scaleX, my = (e.clientY - rect.top) * scaleY;
+  let hit = null;
+  Object.keys(S.registry).forEach(id => {
+    const p = flowPos[id]; if (!p) return;
+    if (mx >= p.x-46 && mx <= p.x+46 && my >= p.y-17 && my <= p.y+17) hit = id;
+  });
+  if (hit !== null) { expandedAgent = (expandedAgent === hit) ? null : hit; drawFlow(); }
+});
+
+fc.addEventListener('mousemove', e => {
+  if (!Object.keys(S.registry).length) { fc.style.cursor='default'; return; }
+  const rect = fc.getBoundingClientRect();
+  const scaleX = fc.width / fc.clientWidth, scaleY = fc.height / fc.clientHeight;
+  const mx = (e.clientX - rect.left) * scaleX, my = (e.clientY - rect.top) * scaleY;
+  let hit = false;
+  Object.keys(S.registry).forEach(id => {
+    const p = flowPos[id]; if (!p) return;
+    if (mx >= p.x-46 && mx <= p.x+46 && my >= p.y-17 && my <= p.y+17) hit = true;
+  });
+  fc.style.cursor = hit ? 'pointer' : 'default';
+});
+
+function hexA(h, a){
+  const r=parseInt(h.slice(1,3),16), g=parseInt(h.slice(3,5),16), b=parseInt(h.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+function layout(reg){
+  const ids = Object.keys(reg);
+  if (!ids.length) return {};
+  const tierOf = {};
+  function depth(id){
+    if (tierOf[id] !== undefined) return tierOf[id];
+    const parent = reg[id]?.reports_to;
+    tierOf[id] = (parent && reg[parent]) ? depth(parent)+1 : 0;
+    return tierOf[id];
+  }
+  ids.forEach(id => depth(id));
+  const maxTier = Math.max(...Object.values(tierOf));
+  const rows = Array.from({length: maxTier+1}, () => []);
+  ids.forEach(id => rows[tierOf[id]].push(id));
+  const filled = rows.filter(r => r.length > 0);
+  const W = fc.width || 600, H = fc.height;
+  const rowY = filled.length === 1
+    ? [H*.45]
+    : filled.map((_,i) => H*(.14 + i*(.72/Math.max(filled.length-1,1))));
+  const pos = {};
+  filled.forEach((row, ri) => {
+    const step = W/(row.length+1);
+    row.forEach((id, ci) => { pos[id] = { x: step*(ci+1), y: rowY[ri], color: reg[id].color || '#6b7280' }; });
+  });
+  return pos;
+}
+
+function drawArrow(x1,y1,x2,y2,color,label,dashed){
+  const dx=x2-x1, dy=y2-y1, len=Math.sqrt(dx*dx+dy*dy);
+  if (len < 5) return;
+  const u={x:dx/len,y:dy/len}, pad=18;
+  const s={x:x1+u.x*pad,y:y1+u.y*pad}, e={x:x2-u.x*pad,y:y2-u.y*pad};
+  const cx=(s.x+e.x)/2-u.y*24, cy=(s.y+e.y)/2+u.x*24;
+  ctx.beginPath(); ctx.moveTo(s.x,s.y); ctx.quadraticCurveTo(cx,cy,e.x,e.y);
+  ctx.strokeStyle=color; ctx.lineWidth=1.5; ctx.setLineDash(dashed?[4,3]:[]); ctx.stroke(); ctx.setLineDash([]);
+  const ang=Math.atan2(e.y-cy,e.x-cx);
+  ctx.beginPath(); ctx.moveTo(e.x,e.y);
+  ctx.lineTo(e.x-7*Math.cos(ang-.4),e.y-7*Math.sin(ang-.4));
+  ctx.lineTo(e.x-7*Math.cos(ang+.4),e.y-7*Math.sin(ang+.4));
+  ctx.closePath(); ctx.fillStyle=color; ctx.fill();
+  if (label){
+    ctx.fillStyle=color; ctx.font='9px "IBM Plex Mono",monospace';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(label.length>16?label.slice(0,16)+'…':label, cx, cy-10);
+  }
+}
+
+function drawFlow(){
+  if (!fc.width) return;
+  const targetH = (expandedAgent && Object.keys(S.registry).length) ? 390 : 260;
+  if (fc.height !== targetH) fc.height = targetH;
+  ctx.clearRect(0,0,fc.width,fc.height);
+  const reg = S.registry;
+  if (!Object.keys(reg).length){
+    ctx.fillStyle='#2a2d35'; ctx.font='12px "Inter",sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText('Agent topology renders here after a scenario runs', fc.width/2, fc.height/2);
+    return;
+  }
+  const pos = layout(reg);
+  flowPos = pos;
+  // hierarchy lines
+  Object.values(reg).forEach(agent => {
+    if (!agent.reports_to || !pos[agent.id] || !pos[agent.reports_to]) return;
+    const fp=pos[agent.reports_to], tp=pos[agent.id];
+    ctx.beginPath(); ctx.moveTo(fp.x,fp.y+16); ctx.lineTo(tp.x,tp.y-16);
+    ctx.strokeStyle='rgba(255,255,255,.08)'; ctx.lineWidth=1; ctx.setLineDash([4,3]); ctx.stroke(); ctx.setLineDash([]);
+  });
+  // last arrow
+  if (S.lastArrow && pos[S.lastArrow.from] && pos[S.lastArrow.to]){
+    const a=S.lastArrow, fp=pos[a.from], tp=pos[a.to];
+    const col = a.arrow_type==='retry'?'#f59e0b' : a.arrow_type==='result'?'#4ade80' : (reg[a.from]?.color||'#888');
+    drawArrow(fp.x,fp.y,tp.x,tp.y,col,a.label,a.arrow_type==='retry');
+  }
+  // nodes
+  Object.keys(reg).forEach(id => {
+    const p=pos[id], ag=S.agents[id], r=reg[id];
+    if (!p) return;
+    const st=ag?.status||'idle', nw=88, nh=30, nx=p.x-nw/2, ny=p.y-nh/2, active=st!=='idle';
+    if (st==='running'){ ctx.shadowColor=p.color; ctx.shadowBlur=12; }
+    ctx.beginPath(); ctx.roundRect(nx,ny,nw,nh,7);
+    ctx.fillStyle=active?hexA(p.color,.12):'#1e2028'; ctx.fill();
+    ctx.strokeStyle=active?p.color:'rgba(255,255,255,.1)'; ctx.lineWidth=active?1.5:.7; ctx.stroke();
+    ctx.shadowBlur=0;
+    ctx.fillStyle=active?p.color:'#5a6070';
+    ctx.font=(active?'500 ':'')+'11px "Inter",sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(r.label,p.x,p.y-4);
+    ctx.fillStyle=hexA(p.color,active?.6:.35); ctx.font='9px "IBM Plex Mono",monospace';
+    ctx.fillText(r.role,p.x,p.y+8);
+  });
+  // ── Expanded agent sub-nodes ─────────────────────────────────────────────────
+  if (expandedAgent && pos[expandedAgent]) {
+    const parent = pos[expandedAgent];
+    // show ▼ on node
+    ctx.fillStyle = hexA(parent.color, .8);
+    ctx.font = 'bold 8px "Inter",sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText('▼', parent.x, parent.y + 17);
+    // gather ops by kind
+    const byKind = {};
+    S.internals.filter(it => it.agent === expandedAgent).forEach(it => {
+      (byKind[it.kind] = byKind[it.kind] || []).push(it);
+    });
+    const kinds = Object.keys(byKind);
+    if (kinds.length) {
+      const subW = 108, subH = 38, gap = 10;
+      const subY = parent.y + 76;
+      const totalW = kinds.length * (subW + gap) - gap;
+      let startX = parent.x - totalW / 2;
+      // clamp to canvas
+      if (startX < 8) startX = 8;
+      if (startX + totalW > fc.width - 8) startX = fc.width - 8 - totalW;
+      kinds.forEach((kind, i) => {
+        const items = byKind[kind];
+        const [bg, col, kindLabel] = (KIND[kind]||'rgba(107,114,128,.15)|#6b7280|?').split('|');
+        const sx = startX + i * (subW + gap) + subW / 2;
+        const sy = subY;
+        flowPos[expandedAgent + ':' + kind] = { x: sx, y: sy, color: col };
+        // connector
+        ctx.beginPath(); ctx.moveTo(parent.x, parent.y + 16); ctx.lineTo(sx, sy - subH/2 - 1);
+        ctx.strokeStyle = hexA(col, .2); ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
+        // box
+        ctx.beginPath(); ctx.roundRect(sx - subW/2, sy - subH/2, subW, subH, 7);
+        ctx.fillStyle = bg; ctx.fill();
+        ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.stroke();
+        // kind label
+        ctx.fillStyle = col; ctx.font = '600 9px "IBM Plex Mono",monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(kindLabel.toUpperCase(), sx, sy - 9);
+        // detail
+        let detail = '×' + items.length;
+        if (kind === 'generation') {
+          const tok = items.reduce((s, it) => s + (it.prompt_tokens||0) + (it.completion_tokens||0), 0);
+          const model = trunc(items[0]?.model||'', 10);
+          detail = items.length + '× · ' + (tok > 999 ? (tok/1000).toFixed(1)+'k' : tok) + ' tok';
+          ctx.fillStyle = hexA(col, .55); ctx.font = '8px "IBM Plex Mono",monospace';
+          ctx.fillText(trunc(model, 14), sx, sy + 3);
+        } else if (kind === 'tool_call') {
+          const tools = [...new Set(items.map(it => it.tool_name))].slice(0, 2);
+          ctx.fillStyle = hexA(col, .55); ctx.font = '8px "IBM Plex Mono",monospace';
+          ctx.fillText(trunc(tools.join(', '), 16), sx, sy + 3);
+        } else if (kind === 'embedding') {
+          const model = items[0]?.model || '—';
+          ctx.fillStyle = hexA(col, .55); ctx.font = '8px "IBM Plex Mono",monospace';
+          ctx.fillText(trunc(model, 14), sx, sy + 3);
+        } else if (kind === 'retrieval') {
+          ctx.fillStyle = hexA(col, .55); ctx.font = '8px "IBM Plex Mono",monospace';
+          ctx.fillText((items[0]?.results?.length || 0) + ' results ea.', sx, sy + 3);
+        }
+        ctx.fillStyle = hexA(col, .85); ctx.font = '500 9px "Inter",sans-serif';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(detail, sx, sy + 12);
+      });
+    } else {
+      // agent has no internals yet
+      ctx.fillStyle = hexA(parent.color, .35); ctx.font = '10px "Inter",sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('no operations recorded', parent.x, parent.y + 65);
+    }
+  }
+
+  // selection ring from Tools tab
+  if (selectedToolItem && pos[selectedToolItem.agent]){
+    const p=pos[selectedToolItem.agent];
+    const col=(KIND[selectedToolItem.kind]||'|||').split('|')[1]||'#888';
+    const [,,kindLabel]=(KIND[selectedToolItem.kind]||'||?').split('|');
+    ctx.shadowColor=col; ctx.shadowBlur=22;
+    ctx.beginPath(); ctx.roundRect(p.x-48,p.y-18,96,36,9);
+    ctx.strokeStyle=col; ctx.lineWidth=2; ctx.stroke(); ctx.shadowBlur=0;
+    ctx.fillStyle=col; ctx.font='bold 9px "IBM Plex Mono",monospace';
+    ctx.textAlign='center'; ctx.textBaseline='bottom';
+    ctx.fillText('▶ '+kindLabel, p.x, p.y-21);
+  }
+}
+
+// ── Tool overlay on canvas ─────────────────────────────────────────────────────
+function updateToolOverlay(item, show, seq){
+  let ov = document.getElementById('tool-overlay');
+  if (!show){
+    if (ov) ov.style.display='none';
+    return;
+  }
+  const p = flowPos[item?.agent];
+  if (!p){ if (ov) ov.style.display='none'; return; }
+
+  const [bg,col,kindLabel]=(KIND[item.kind]||'rgba(107,114,128,.15)|#6b7280|?').split('|');
+  const agentLabel=(S.registry[item.agent]?.label)||item.agent;
+  const agentColor=S.registry[item.agent]?.color||'#6b7280';
+
+  if (!ov){
+    ov=document.createElement('div'); ov.id='tool-overlay'; ov.className='tool-overlay';
+    fc.parentElement.appendChild(ov);
+  }
+
+  ov.innerHTML=`<div class="tool-overlay-hdr">
+    <span class="tool-seq">#${seq}</span>
+    <span class="tool-kind" style="background:${bg};color:${col}">${kindLabel}</span>
+    <span class="tool-agent-name" style="color:${agentColor}">${agentLabel}</span>
+  </div>
+  ${toolBody(item)}`;
+  ov.style.display='block';
+
+  // Map canvas coords → CSS px (canvas may be scaled via CSS width:100%)
+  const scaleX = fc.clientWidth / fc.width;
+  const scaleY = fc.clientHeight / fc.height;
+  const cx = p.x * scaleX, cy = p.y * scaleY;
+  const ovW = 260, ovH = ov.offsetHeight || 160;
+  // prefer right side, fall back to left
+  let left = cx + 54;
+  if (left + ovW > fc.clientWidth - 4) left = cx - 54 - ovW;
+  left = Math.max(4, left);
+  let top = cy - ovH / 2;
+  top = Math.max(4, Math.min(fc.clientHeight - ovH - 4, top));
+  ov.style.left = left+'px';
+  ov.style.top  = top+'px';
+}
+
+// ── Agents list ────────────────────────────────────────────────────────────────
+function renderAgents(){
+  const el = document.getElementById('agents-list');
+  const reg = S.registry, agents = S.agents;
+  const ids = Object.keys(reg);
+  if (!ids.length){ el.innerHTML = '<div class="empty">Agents appear after registration</div>'; return; }
+  el.innerHTML = '';
+  ids.forEach(id => {
+    const r=reg[id], a=agents[id]||{}, col=r.color||ROLE_COLORS[r.role]||'#6b7280';
+    const st=a.status||'idle', display=st==='idle'&&reg[id]?'registered':st;
+    const row=document.createElement('div'); row.className='agent-row '+display;
+    row.innerHTML = `<div class="agent-dot"></div>
+      <span class="agent-name" style="color:${st==='idle'?'var(--text)':col}">${r.label}</span>
+      <span class="agent-role" style="background:${hexA(col,.14)};color:${col}">${r.role}</span>`;
+    el.appendChild(row);
+  });
+}
+
+// ── Memory tab ────────────────────────────────────────────────────────────────
+function memSentence(k, m){
+  if (!m) return `Nothing has been stored under <b>${k}</b> yet.`;
+  const v = String(m.value);
+  const short = v.slice(0,90)+(v.length>90?'…':'');
+  return `<b>${k}</b> was ${m.op==='read'?'read as':'set to'}: "${short}"`;
+}
+
+function renderMem(){
+  const g=document.getElementById('mem-grid');
+  const keys=[...new Set([...Object.keys(S.memory)])];
+  if (!keys.length){ g.innerHTML='<div class="empty">No memory entries yet</div>'; return; }
+  g.innerHTML='';
+  keys.forEach(k => {
+    const m=S.memory[k], card=document.createElement('div'); card.className='mem-card'; card.id='mc-'+k;
+    card.innerHTML=`<div class="mem-val set">${memSentence(k,m)}</div>`;
+    g.appendChild(card);
+  });
+}
+
+function flashMem(key,op){
+  const c=document.getElementById('mc-'+key);
+  if (!c){ renderMem(); return; }
+  c.classList.remove('fw','fr'); void c.offsetWidth; c.classList.add(op==='write'?'fw':'fr');
+}
+
+// ── Log tab ───────────────────────────────────────────────────────────────────
+const TAG = {
+  start:'rgba(139,124,248,.15)|#8b7cf8', plan:'rgba(139,124,248,.15)|#8b7cf8', route:'rgba(139,124,248,.15)|#8b7cf8',
+  registered:'rgba(139,124,248,.12)|#7f77dd', reply:'rgba(74,222,128,.12)|#4ade80', pass:'rgba(74,222,128,.12)|#4ade80',
+  done:'rgba(74,222,128,.12)|#4ade80', fail:'rgba(248,113,113,.12)|#f87171', error:'rgba(248,113,113,.12)|#f87171',
+  retry:'rgba(245,158,11,.12)|#f59e0b', warn:'rgba(245,158,11,.12)|#f59e0b',
+};
+
+const LOG_VERB = {
+  start:'started', plan:'planned', route:'routed a task', registered:'joined',
+  reply:'replied', pass:'passed', done:'finished', fail:'failed',
+  error:'hit an error', retry:'is retrying', warn:'warned', tool:'called a tool', result:'got a result',
+};
+
+function logSentence(ev){
+  const label = (S.registry[ev.agent]?.label) || ev.agent;
+  const verb  = LOG_VERB[ev.event_type] || ev.event_type;
+  return `<b>${label}</b> ${verb} — ${ev.message}`;
+}
+
+function addLog(ev, prepend=true){
+  const log=document.getElementById('tp-log');
+  const empty=log.querySelector('.empty'); if (empty) empty.remove();
+  const [bg,col]=(TAG[ev.event_type]||'rgba(255,255,255,.06)|#9ca3af').split('|');
+  const d=new Date(ev.ts||Date.now()), ts=`${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
+  const row=document.createElement('div'); row.className='log-row';
+  row.innerHTML=`<span class="log-tag" style="background:${bg};color:${col}">${ev.event_type}</span><span class="log-msg">${logSentence(ev)}</span><span class="log-time">${ts}</span>`;
+  if (prepend) log.insertBefore(row,log.firstChild); else log.appendChild(row);
+  if (log.children.length>80) log.removeChild(log.lastChild);
+}
+
+// ── Tools tab ─────────────────────────────────────────────────────────────────
+const KIND = {
+  embedding: 'rgba(139,124,248,.15)|#8b7cf8|embed',
+  retrieval: 'rgba(45,212,176,.15)|#2dd4b0|retrieve',
+  tool_call: 'rgba(96,165,250,.15)|#60a5fa|tool',
+  generation:'rgba(245,158,11,.15)|#f59e0b|generate',
+};
+
+const trunc = (s, n) => (s && s.length > n) ? s.slice(0, n) + '…' : (s||'');
+
+function toolPreview(item){
+  switch(item.kind){
+    case 'embedding':  return `"${trunc(item.text, 45)}" → ${item.dims}d (${item.model})`;
+    case 'retrieval':  return `search: "${trunc(item.query, 45)}"`;
+    case 'tool_call':  return item.error ? `✗ ${item.tool_name}: ${trunc(item.error, 50)}` : `${item.tool_name} — ${trunc(item.output, 55)}`;
+    case 'generation': return `${item.model||'model'} · ${(item.prompt_tokens+item.completion_tokens).toLocaleString()} tokens`;
+    default: return trunc(JSON.stringify(item), 60);
+  }
+}
+
+function toolBody(item){
+  const agentLabel = (S.registry[item.agent]?.label) || item.agent;
+  const agentColor = S.registry[item.agent]?.color || '#6b7280';
+  const blk = (label, val, full=false) =>
+    `<div class="tool-block${full?' full':''}"><span class="tb-label">${label}</span><div class="tb-val">${val}</div></div>`;
+  const agent = `<span style="color:${agentColor};font-weight:600">${agentLabel}</span>`;
+  switch(item.kind){
+    case 'embedding':
+      return `<div class="tool-blocks">
+        ${blk('Agent', agent)}
+        ${blk('Model', item.model||'—')}
+        ${blk('Dimensions', item.dims ? item.dims+'d' : '—')}
+        ${blk('Input text', trunc(item.text, 300), true)}
+      </div>`;
+    case 'retrieval': {
+      const n=(item.results||[]).length, top=item.results?.[0];
+      return `<div class="tool-blocks">
+        ${blk('Agent', agent)}
+        ${blk('Results found', String(n))}
+        ${blk('Query', trunc(item.query, 300), true)}
+        ${top ? blk('Best match', `<span style="color:var(--teal)">score ${top.score.toFixed(2)}</span> — ${trunc(top.text, 200)}`, true) : ''}
+      </div>`;
+    }
+    case 'tool_call': {
+      const ok=!item.error;
+      const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return `<div class="tool-blocks">
+        ${blk('Agent', agent)}
+        ${blk('Tool', `<b>${item.tool_name}</b>`)}
+        ${blk('Status', ok ? '<span style="color:var(--green)">✓ success</span>' : '<span style="color:var(--coral)">✗ failed</span>')}
+        ${item.latency_ms ? blk('Latency', item.latency_ms+'ms') : ''}
+      </div>
+      ${item.input ? `<div class="llm-response" style="border-top:1px solid rgba(255,255,255,.06)"><div class="llm-section-label" style="color:var(--blue)">↑ input</div><div class="llm-response-text" style="color:var(--muted)">${esc(item.input)}</div></div>` : ''}
+      ${ok && item.output ? `<div class="llm-response"><div class="llm-section-label" style="color:var(--green)">↓ output</div><div class="llm-response-text">${esc(item.output)}</div></div>` : ''}
+      ${!ok && item.error ? `<div class="llm-response"><div class="llm-section-label" style="color:var(--coral)">✗ error</div><div class="llm-response-text" style="color:var(--coral)">${esc(item.error)}</div></div>` : ''}`;
+    }
+    case 'generation': {
+      const total = item.prompt_tokens + item.completion_tokens;
+      const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const msgs = (item.messages||[]).map(m =>
+        `<div class="llm-turn ${m.role}"><div class="llm-role">${m.role}</div><div class="llm-content">${esc(m.content)}</div></div>`
+      ).join('');
+      return `<div class="tool-blocks">
+        ${blk('Agent', agent)}
+        ${blk('Model', item.model||'—')}
+        ${blk('Prompt tokens', item.prompt_tokens.toLocaleString())}
+        ${blk('Completion tokens', item.completion_tokens.toLocaleString())}
+        ${blk('Total tokens', total.toLocaleString())}
+        ${item.latency_ms ? blk('Latency', item.latency_ms+'ms') : ''}
+        ${item.stop_reason ? blk('Stop reason', item.stop_reason) : ''}
+      </div>
+      ${msgs ? `<div class="llm-thread">${msgs}</div>` : ''}
+      ${item.thinking ? `<div class="llm-thinking"><div class="llm-section-label">◎ thinking</div><div class="llm-thinking-text">${esc(item.thinking)}</div></div>` : ''}
+      ${item.response ? `<div class="llm-response"><div class="llm-section-label">↩ response</div><div class="llm-response-text">${esc(item.response)}</div></div>` : ''}`;
+    }
+    default:
+      return `<div class="tool-blocks">${blk('Raw', `<pre style="font-size:10px;white-space:pre-wrap">${JSON.stringify(item,null,2)}</pre>`, true)}</div>`;
+  }
+}
+
+function addInternal(item, prepend=true, seqOverride=null){
+  const panel=document.getElementById('tp-tools');
+  const empty=panel.querySelector('.empty'); if (empty) empty.remove();
+  const [bg,col,kindLabel]=(KIND[item.kind]||'rgba(107,114,128,.15)|#6b7280|?').split('|');
+  const agentLabel = (S.registry[item.agent]?.label) || item.agent;
+  const agentColor = S.registry[item.agent]?.color || '#6b7280';
+
+  if (seqOverride === null) toolSeq++;
+  const seq = seqOverride !== null ? seqOverride : toolSeq;
+
+  const det = document.createElement('details'); det.className='tool-item';
+  det.innerHTML=`<summary>
+    <span class="tool-chevron">▶</span>
+    <span class="tool-seq">#${seq}</span>
+    <span class="tool-kind" style="background:${bg};color:${col}">${kindLabel}</span>
+    <span class="tool-agent-name" style="color:${agentColor}">${agentLabel}</span>
+    <span class="tool-preview">${toolPreview(item)}</span>
+    ${item.latency_ms?`<span class="tool-lat">${item.latency_ms}ms</span>`:''}
+  </summary>
+  <div class="tool-body">${toolBody(item)}</div>`;
+
+  det.addEventListener('toggle', () => {
+    selectedToolItem = det.open ? item : null;
+    drawFlow();
+    updateToolOverlay(item, det.open, seq);
+  });
+
+  if (prepend) panel.insertBefore(det, panel.firstChild); else panel.appendChild(det);
+  if (panel.children.length>100) panel.removeChild(panel.lastChild);
+}
+
+// ── Plan tab ──────────────────────────────────────────────────────────────────
+function renderPlan(){
+  const pl=document.getElementById('plan-list');
+  if (!S.plan.length) return;
+  pl.innerHTML='';
+  S.plan.forEach((t,i) => {
+    const r=S.registry[t.agent]||{}, col=r.color||'#6b7280';
+    const done=(S.agents[t.agent]?.status==='done')||S.metrics.steps>i+2;
+    const row=document.createElement('div'); row.className='plan-row';
+    row.innerHTML=`<div class="plan-dot" style="background:${done?'#4ade80':col}"></div><span class="plan-agent" style="color:${col}">${t.agent}</span><span class="plan-task">${t.task}</span>${done?'<span class="plan-done">done</span>':''}`;
+    pl.appendChild(row);
+  });
+}
+
+// ── Status / elapsed ─────────────────────────────────────────────────────────
+function setStatus(s){
+  S.status=s;
+  const p=document.getElementById('run-status');
+  p.textContent=s; p.className='badge '+s;
+  document.getElementById('spinner').className='spinner'+(s==='running'?' on':'');
+  if (s!=='running'){ clearInterval(elapsedTimer); elapsedTimer=null; }
+}
+function startElapsed(){
+  if (elapsedTimer) clearInterval(elapsedTimer);
+  elapsedTimer=setInterval(() => {
+    if (!S.startedAt) return;
+    document.getElementById('m-elapsed').textContent=(Math.round((Date.now()-S.startedAt)/100)/10)+'s';
+  },200);
+}
+
+// ── Full state apply ──────────────────────────────────────────────────────────
+function applyFull(st){
+  if (!st){
+    S={registry:{},agents:{},memory:{},events:[],plan:[],internals:[],metrics:{steps:0,tokens:0,retries:0},status:'idle',goal:'',startedAt:null,lastArrow:null};
+    toolSeq=0; selectedToolItem=null; flowPos={}; expandedAgent=null;
+    const _ov=document.getElementById('tool-overlay'); if(_ov) _ov.style.display='none';
+    document.getElementById('goal-text').textContent='waiting for agents…';
+    document.getElementById('tp-log').innerHTML='<div class="empty">Events stream here during a run</div>';
+    document.getElementById('tp-tools').innerHTML='<div class="empty">Embeddings, retrievals, tool calls and LLM generations appear here</div>';
+    document.getElementById('mem-grid').innerHTML='';
+    document.getElementById('plan-list').innerHTML='<div class="empty">Plan appears after orchestrator runs</div>';
+    ['m-steps','m-tokens','m-retries'].forEach(id=>document.getElementById(id).textContent='0');
+    document.getElementById('m-elapsed').textContent='—';
+    setStatus('idle'); renderAgents(); drawFlow();
+    return;
+  }
+  S.registry=st.registry||{};
+  S.agents=st.agents||{};
+  S.memory={};
+  Object.entries(st.memory||{}).forEach(([k,v])=>S.memory[k]=v);
+  S.events=st.events||[];
+  S.plan=st.plan||[];
+  S.internals=st.internals||[];
+  S.metrics=st.metrics||{steps:0,tokens:0,retries:0};
+  S.status=st.status||'idle';
+  S.goal=st.goal||'';
+  S.startedAt=st.startedAt||null;
+  S.lastArrow=(st.arrows||[])[0]||null;
+
+  document.getElementById('goal-text').textContent=S.goal||'waiting for agents…';
+  document.getElementById('m-steps').textContent=S.metrics.steps;
+  document.getElementById('m-tokens').textContent=S.metrics.tokens>999?(S.metrics.tokens/1000).toFixed(1)+'k':S.metrics.tokens;
+  document.getElementById('m-retries').textContent=S.metrics.retries;
+  setStatus(S.status);
+  renderAgents(); renderMem(); renderPlan(); drawFlow();
+
+  const logEl=document.getElementById('tp-log'); logEl.innerHTML='';
+  S.events.slice().reverse().forEach(ev=>addLog(ev,false));
+  if (!S.events.length) logEl.innerHTML='<div class="empty">Events stream here during a run</div>';
+
+  toolSeq = 0;
+  const toolsEl=document.getElementById('tp-tools'); toolsEl.innerHTML='';
+  if (S.internals.length) S.internals.forEach((it,i)=>addInternal(it,false,i+1));
+  else toolsEl.innerHTML='<div class="empty">Embeddings, retrievals, tool calls and LLM generations appear here</div>';
+
+  if (S.startedAt&&S.status==='running') startElapsed();
+}
+
+// ── SSE handler ───────────────────────────────────────────────────────────────
+function handle(type,p){
+  switch(type){
+    case 'init':    applyFull(p.state); break;
+    case 'reset':   applyFull(null); break;
+    case 'registry': S.registry=p; renderAgents(); drawFlow(); break;
+    case 'agents':   S.agents=p; renderAgents(); drawFlow(); break;
+    case 'goal':     S.goal=p.goal; S.startedAt=Date.now(); document.getElementById('goal-text').textContent=p.goal; startElapsed(); break;
+    case 'status':   setStatus(p); break;
+    case 'event':    addLog(p); break;
+    case 'memory':   S.memory[p.key]=p; renderMem(); flashMem(p.key,p.op); break;
+    case 'arrow':    S.lastArrow=p; drawFlow(); break;
+    case 'plan':     S.plan=p; renderPlan(); break;
+    case 'metrics':
+      S.metrics=p;
+      document.getElementById('m-steps').textContent=p.steps;
+      document.getElementById('m-tokens').textContent=p.tokens>999?(p.tokens/1000).toFixed(1)+'k':p.tokens;
+      document.getElementById('m-retries').textContent=p.retries;
+      break;
+    case 'internal': addInternal(p); break;
+  }
+}
+
+// ── Connection ────────────────────────────────────────────────────────────────
+function setBadge(live){
+  const b=document.getElementById('conn-badge');
+  b.textContent=live?'live':'reconnecting…';
+  b.className='badge '+(live?'live':'dead');
+}
+function connect(){
+  if (es){ es.close(); es=null; }
+  es=new EventSource(SERVER+'/events');
+  es.onopen=()=>setBadge(true);
+  es.onerror=()=>{ setBadge(false); es.close(); es=null; setTimeout(connect,2000); };
+  es.onmessage=e=>{ setBadge(true); const msg=JSON.parse(e.data); handle(msg.type,msg.payload); };
+}
+
+// ── UI actions ────────────────────────────────────────────────────────────────
+function switchTab(e,name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  e.target.classList.add('active');
+  document.getElementById('tp-'+name).classList.add('active');
+}
+async function emulate(scenario){
+  try{
+    const r=await fetch(SERVER+'/emulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario})});
+    if (!r.ok) alert('Server error: '+r.status);
+  }catch(_){alert('Cannot reach server at '+SERVER);}
+}
+async function doReset(){
+  try{ await fetch(SERVER+'/reset',{method:'POST'}); }catch(_){ applyFull(null); }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+setTimeout(()=>{ initCanvas(); connect(); },80);
+</script>
+</body>
+</html>
