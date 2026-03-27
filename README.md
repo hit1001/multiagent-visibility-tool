@@ -11,8 +11,6 @@ Plug it into any agent framework via HTTP or MCP and get an instant view of:
 - **Memory panel** — key/value store with read/write flash animations
 - **Plan & event log** — task plan with completion state, timestamped event stream
 
-![screenshot placeholder](docs/screenshot.png)
-
 ---
 
 ## Quick start
