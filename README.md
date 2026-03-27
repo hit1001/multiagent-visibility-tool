@@ -1,5 +1,7 @@
 🚀 Multi-Agent Visibility Tool
 
+![demo](https://github.com/user-attachments/assets/6cfd80fb-841c-4cd0-9ee5-b9a51029531b)
+
 Stop guessing what your AI agents are doing. See everything — in real time.
 
 😩 The Problem
