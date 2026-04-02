@@ -1,3 +1,14 @@
+---
+title: Agent Visibility
+emoji: 🔭
+colorFrom: purple
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Real-time debug dashboard for multi-agent AI systems
+---
+
 # agent-visibility
 
 Real-time debug dashboard for multi-agent AI systems.
