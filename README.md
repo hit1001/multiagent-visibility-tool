@@ -1,70 +1,126 @@
-🚀 Multi-Agent Visibility Tool
+# 🔍 MAVT — Multi-Agent Visibility Tool
 
-![demo](https://github.com/user-attachments/assets/6cfd80fb-841c-4cd0-9ee5-b9a51029531b)
+> The missing DevTools for multi-agent AI systems.
 
-Stop guessing what your AI agents are doing. See everything — in real time.
+[![PyPI](https://img.shields.io/pypi/v/mavt?style=flat&color=blue)](https://pypi.org/project/mavt/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Stars](https://img.shields.io/github/stars/hit1001/multiagent-visibility-tool?style=flat)](https://github.com/hit1001/multiagent-visibility-tool/stargazers)
 
-😩 The Problem
+![MAVT Demo](demo.gif)
 
-Multi-agent systems are powerful… but incredibly hard to debug.
+**You wouldn't ship a backend without logs. Why are you shipping agents blind?**
 
-Why did the agent fail?
-What are agents saying to each other?
-Where did the workflow break?
+Multi-agent systems are the future of AI — but right now, debugging them feels like
+reading smoke signals. MAVT gives you full observability: every agent call, every
+decision step, every inter-agent message, visualized in real time.
 
-👉 Most of the time, you’re flying blind.
+---
 
-🔥 The Solution
+## The problem
 
-Multi-Agent Visibility Tool gives you full observability into your AI agents:
+You build a multi-agent workflow. Something breaks. You ask yourself:
 
-🔍 Trace every agent interaction
-🧠 Understand decision steps
-📊 Visualize workflows as graphs
-⚡ Debug in real time
+- Which agent failed — and why?
+- What did agent A actually say to agent B?
+- Where in the chain did the task go wrong?
+- Why is this running so slow?
 
-Think of it as observability for AI agents.
+You open your terminal. You see... nothing useful.
 
-⚡ Get Started in 2 Minutes
+**MAVT fixes this.**
 
-Install:
+---
 
+## What you get
+
+| | |
+|---|---|
+| 🔁 **Agent-to-agent traces** | See every message passed between agents, in order |
+| 🧠 **Decision step inspector** | Understand what reasoning led to each action |
+| 📊 **Live workflow graph** | Visual execution graph, updating in real time |
+| ⏱ **Execution timeline** | Spot bottlenecks and latency across your pipeline |
+| 🐛 **Real-time debug view** | No post-hoc log parsing — watch it live |
+
+---
+
+## Get started in 60 seconds
+
+```bash
 pip install mavt
+```
 
-Add one line to your code:
-
+```python
 from mavt import track_agents
 
-track_agents()
+track_agents()  # That's it.
+```
 
-✅ That’s it — your agents are now observable.
+Open your browser → `http://localhost:7777`
 
-🎥 What You’ll See
-Agent-to-agent communication
-Execution timeline
-Visual workflow graph
-🧩 Works With
-LangChain (coming soon)
-AutoGen (coming soon)
-CrewAI (coming soon)
-💡 Use Cases
-Debug multi-agent workflows
-Optimize agent collaboration
-Monitor production AI systems
-🧠 Why This Matters
+Your agents are now fully observable.
 
-If you can’t see what your agents are doing:
+---
 
-You can’t debug them
-You can’t trust them
-You can’t scale them
-⭐ Support
+## Works with
 
-If this project helps you, consider giving it a star ⭐
-It helps others discover it and keeps development going.
+- ✅ **AgentScope** — supported now
+- 🔜 **LangChain** — coming soon
+- 🔜 **AutoGen** — coming soon  
+- 🔜 **CrewAI** — coming soon
+- 🔜 **Custom agents** — bring your own
 
-🚀 Vision
+---
 
-AI systems are becoming more autonomous and complex.
+## Why observability is non-negotiable
 
-We believe observability is not optional — it’s foundational.
+> *"If you can't measure it, you can't manage it."*
+
+AI agents are making real decisions in production systems today — in customer service,
+in code generation, in enterprise workflows. Without visibility:
+
+- You can't debug failures
+- You can't trust outputs
+- You can't scale safely
+- You can't explain decisions to stakeholders
+
+MAVT is the foundation layer your agent stack is missing.
+
+---
+
+## Roadmap
+
+- [x] AgentScope integration
+- [x] Live workflow graph
+- [x] Agent-to-agent message tracing
+- [ ] LangChain integration
+- [ ] AutoGen integration
+- [ ] CrewAI integration
+- [ ] Metrics & cost tracking per agent
+- [ ] Export traces to JSON / OpenTelemetry
+- [ ] Cloud-hosted dashboard (optional)
+
+---
+
+## Contributing
+
+Issues, PRs, and framework integrations are very welcome.
+If you're using MAVT with a framework not listed above — open an issue and let's add it.
+
+---
+
+## Star history
+
+If MAVT saves you a debugging session, consider leaving a ⭐ —
+it helps other developers find the tool.
+
+---
+
+## About the author
+
+Built by [Hitarth Bhatt](https://github.com/hit1001) — AI product leader with 10+ years
+shipping AI systems at scale. MAVT grew out of a real frustration: the more powerful
+multi-agent systems become, the harder they are to see inside.
+
+---
+
+**MIT License** · [PyPI](https://pypi.org/project/mavt/) · [Issues](https://github.com/hit1001/multiagent-visibility-tool/issues)
