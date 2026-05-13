@@ -6,8 +6,15 @@ const path = require('path');
 
 const PORT = parseInt(process.env.VISIBILITY_PORT || '4242');
 
+// ── Persistence (optional — degrades gracefully if better-sqlite3 absent) ─────
+let db = null;
+try { db = require('./db'); db.init(); }
+catch (e) { console.warn('[agentscope] Persistence disabled:', e.message); db = null; }
+
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = fresh();
+let suppressBroadcast = false;
+let suppressPersist   = false;
 function fresh() {
   return {
     agents: {}, registry: {}, memory: {}, events: [],
@@ -15,11 +22,96 @@ function fresh() {
     metrics: { steps: 0, tokens: 0, retries: 0 },
     goal: '', runId: null, status: 'idle', startedAt: null,
     clients: [],
+    eventSeq: 0,
   };
 }
 
+function persist(tool, args) {
+  if (suppressPersist || !db || !state.runId) return;
+  state.eventSeq++;
+  try { db.persistEvent(state.runId, state.eventSeq, tool, args, Date.now()); } catch (_) {}
+}
+
+// ── Alert engine ───────────────────────────────────────────────────────────────
+const alertConfig = {
+  webhookUrl:       null,
+  tokenBudgetPct:   90,    // fire when agent tokens >= N% of budget
+  stuckAgentSec:    120,   // fire when running agent has no activity for N seconds
+  criticFailRatePct: 50,   // fire when critic fail rate >= N% (min 3 events)
+};
+const alertState = {
+  fired:        new Set(),   // dedup keys already sent this run
+  lastActivity: {},          // agentId → last-active timestamp
+  critic:       { total: 0, fails: 0 },
+};
+function resetAlertState() {
+  alertState.fired.clear();
+  alertState.lastActivity = {};
+  alertState.critic = { total: 0, fails: 0 };
+}
+function fireAlert(type, data) {
+  const payload = { alert: type, runId: state.runId, goal: state.goal, ...data, ts: Date.now() };
+  broadcast('alert', payload);
+  if (!alertConfig.webhookUrl) return;
+  try {
+    const u = new URL(alertConfig.webhookUrl);
+    const body = JSON.stringify(payload);
+    const mod  = u.protocol === 'https:' ? require('https') : require('http');
+    const opts = {
+      hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search, method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    };
+    const r = mod.request(opts, () => {}); r.on('error', () => {}); r.write(body); r.end();
+  } catch (_) {}
+}
+function checkTokenBudget(agentId) {
+  const ag     = state.agents[agentId]; if (!ag) return;
+  const budget = ag.token_budget || state.registry[agentId]?.token_budget || 0;
+  if (!budget) return;
+  const pct = (ag.tokens / budget) * 100;
+  const key = `${agentId}:budget:${Math.floor(ag.tokens / 100) * 100}`;
+  if (pct >= alertConfig.tokenBudgetPct && !alertState.fired.has(key)) {
+    alertState.fired.add(key);
+    fireAlert('token_budget_exceeded', { agent: agentId, tokens: ag.tokens, budget, pct: +pct.toFixed(1) });
+  }
+}
+function checkCriticFails(agentId, event_type) {
+  const role = state.registry[agentId]?.role || state.agents[agentId]?.role;
+  if (role !== 'critic') return;
+  alertState.critic.total++;
+  if (['error', 'fail', 'reject', 'rejected', 'failure'].includes(event_type)) alertState.critic.fails++;
+  if (alertState.critic.total < 3) return;
+  const rate = (alertState.critic.fails / alertState.critic.total) * 100;
+  const key  = `critic:fail:${alertState.critic.fails}`;
+  if (rate >= alertConfig.criticFailRatePct && !alertState.fired.has(key)) {
+    alertState.fired.add(key);
+    fireAlert('critic_fail_rate', {
+      fails: alertState.critic.fails, total: alertState.critic.total, rate: +rate.toFixed(1),
+    });
+  }
+}
+// Check for stuck agents every 15 s
+setInterval(() => {
+  if (!state.runId) return;
+  const now     = Date.now();
+  const threshMs = alertConfig.stuckAgentSec * 1000;
+  Object.entries(alertState.lastActivity).forEach(([id, ts]) => {
+    const ag = state.agents[id];
+    if (!ag || ag.status === 'done' || ag.status === 'idle' || ag.status === 'error') return;
+    if (now - ts > threshMs) {
+      const key = `${id}:stuck:${Math.floor(ts / 10000)}`;
+      if (!alertState.fired.has(key)) {
+        alertState.fired.add(key);
+        fireAlert('agent_stuck', { agent: id, idle_sec: Math.floor((now - ts) / 1000) });
+      }
+    }
+  });
+}, 15000);
+
 // ── SSE broadcast ─────────────────────────────────────────────────────────────
 function broadcast(type, payload) {
+  if (suppressBroadcast) return;
   const msg = `data: ${JSON.stringify({ type, payload, ts: Date.now() })}\n\n`;
   state.clients.forEach(r => { try { r.write(msg); } catch (_) {} });
 }
@@ -63,10 +155,13 @@ function snapshot() {
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
 const TOOLS = {
-  register_agent({ id, label, role = 'worker', model = '', reports_to = null, token_budget = 8192, color = null }) {
+  register_agent(a) {
+    persist('register_agent', a);
+    const { id, label, role = 'worker', model = '', reports_to = null, token_budget = 8192, color = null } = a;
     const c = color || COLORS[role] || '#6b7280';
     state.registry[id] = { id, label, role, model, reports_to, token_budget, color: c };
     state.agents[id]   = { ...state.registry[id], status: 'idle', tokens: 0, calls: 0 };
+    if (db) try { db.appendRunAgent(state.runId, id); } catch (_) {}
     broadcast('registry', state.registry);
     broadcast('agents', safeAgents());
     broadcast('event', { agent: id, event_type: 'registered',
@@ -74,7 +169,9 @@ const TOOLS = {
       tokens: 0, latency_ms: 0, ts: Date.now() });
     return { ok: true };
   },
-  log_event({ agent, event_type, message, tokens = 0, latency_ms = 0, metadata = {} }) {
+  log_event(a) {
+    persist('log_event', a);
+    const { agent, event_type, message, tokens = 0, latency_ms = 0, metadata = {} } = a;
     ensureAgent(agent);
     const item = { agent, event_type, message, tokens, latency_ms, metadata, ts: Date.now() };
     state.events.unshift(item);
@@ -85,23 +182,32 @@ const TOOLS = {
       state.metrics.tokens       += tokens;
     }
     state.metrics.steps++;
+    alertState.lastActivity[agent] = Date.now();
+    checkCriticFails(agent, event_type);
     broadcast('event', item);
     broadcast('metrics', state.metrics);
     broadcast('agents', safeAgents());
     return { ok: true };
   },
-  set_memory({ key, value, op = 'write' }) {
+  set_memory(a) {
+    persist('set_memory', a);
+    const { key, value, op = 'write' } = a;
     state.memory[key] = { value, op, ts: Date.now() };
     broadcast('memory', { key, value, op, ts: Date.now() });
     return { ok: true };
   },
-  set_agent_state({ agent_id, status }) {
+  set_agent_state(a) {
+    persist('set_agent_state', a);
+    const { agent_id, status } = a;
     ensureAgent(agent_id);
     state.agents[agent_id].status = status;
+    alertState.lastActivity[agent_id] = Date.now();
     broadcast('agents', safeAgents());
     return { ok: true };
   },
-  trace_step({ from_agent, to_agent, label = '', arrow_type = 'msg' }) {
+  trace_step(a) {
+    persist('trace_step', a);
+    const { from_agent, to_agent, label = '', arrow_type = 'msg' } = a;
     ensureAgent(from_agent); ensureAgent(to_agent);
     const arrow = { from: from_agent, to: to_agent, label, arrow_type, ts: Date.now() };
     state.arrows.unshift(arrow);
@@ -109,20 +215,39 @@ const TOOLS = {
     broadcast('arrow', arrow);
     return { ok: true };
   },
-  set_plan({ tasks }) { state.plan = tasks; broadcast('plan', tasks); return { ok: true }; },
-  set_goal({ goal, run_id }) {
-    state.goal = goal; state.runId = run_id || String(Date.now());
+  set_plan(a) {
+    persist('set_plan', a);
+    const { tasks } = a;
+    state.plan = tasks;
+    broadcast('plan', tasks);
+    return { ok: true };
+  },
+  set_goal(a) {
+    const { goal, run_id } = a;
+    state.goal = goal;
+    // preserve pre-set runId (from runScenario) unless caller passes one explicitly
+    state.runId = run_id || state.runId || String(Date.now());
     state.status = 'running'; state.startedAt = Date.now();
+    resetAlertState();
+    if (db) try { db.startRun(state.runId, goal, state.startedAt); } catch (_) {}
+    persist('set_goal', a); // after runId is set
     broadcast('goal', { goal, runId: state.runId });
     broadcast('status', 'running');
     return { ok: true };
   },
-  finish_run({ status = 'done' }) {
-    state.status = status; broadcast('status', status); return { ok: true };
+  finish_run(a) {
+    const { status = 'done' } = a;
+    state.status = status;
+    if (db) try { db.finishRun(state.runId, status, Date.now(), { steps: state.metrics.steps, tokens: state.metrics.tokens }); } catch (_) {}
+    persist('finish_run', a);
+    broadcast('status', status);
+    return { ok: true };
   },
 
   // ── Internal observability tools ──────────────────────────────────────────
-  log_embedding({ agent, text, model = 'text-embedding-3-small', dims = 1536, latency_ms = 0 }) {
+  log_embedding(a) {
+    persist('log_embedding', a);
+    const { agent, text, model = 'text-embedding-3-small', dims = 1536, latency_ms = 0 } = a;
     ensureAgent(agent);
     const item = { kind: 'embedding', agent, text: String(text).slice(0, 90), model, dims, latency_ms, ts: Date.now() };
     state.internals.unshift(item);
@@ -130,7 +255,9 @@ const TOOLS = {
     broadcast('internal', item);
     return { ok: true };
   },
-  log_retrieval({ agent, query, results = [], latency_ms = 0 }) {
+  log_retrieval(a) {
+    persist('log_retrieval', a);
+    const { agent, query, results = [], latency_ms = 0 } = a;
     ensureAgent(agent);
     const item = {
       kind: 'retrieval', agent,
@@ -143,7 +270,9 @@ const TOOLS = {
     broadcast('internal', item);
     return { ok: true };
   },
-  log_tool_call({ agent, tool_name, input = '', output = '', latency_ms = 0, error = null }) {
+  log_tool_call(a) {
+    persist('log_tool_call', a);
+    const { agent, tool_name, input = '', output = '', latency_ms = 0, error = null } = a;
     ensureAgent(agent);
     const item = {
       kind: 'tool_call', agent, tool_name,
@@ -153,10 +282,13 @@ const TOOLS = {
     };
     state.internals.unshift(item);
     if (state.internals.length > 200) state.internals.pop();
+    alertState.lastActivity[agent] = Date.now();
     broadcast('internal', item);
     return { ok: true };
   },
-  log_generation({ agent, prompt_tokens = 0, completion_tokens = 0, model = '', latency_ms = 0, stop_reason = 'stop', messages = [], response = null, thinking = null }) {
+  log_generation(a) {
+    persist('log_generation', a);
+    const { agent, prompt_tokens = 0, completion_tokens = 0, model = '', latency_ms = 0, stop_reason = 'stop', messages = [], response = null, thinking = null } = a;
     ensureAgent(agent);
     const total = prompt_tokens + completion_tokens;
     const item = {
@@ -173,6 +305,8 @@ const TOOLS = {
       state.agents[agent].calls  += 1;
       state.metrics.tokens       += total;
     }
+    alertState.lastActivity[agent] = Date.now();
+    if (total) checkTokenBudget(agent);
     broadcast('internal', item);
     broadcast('agents', safeAgents());
     broadcast('metrics', state.metrics);
@@ -181,6 +315,29 @@ const TOOLS = {
 };
 // alias: log_llm_turn → log_generation (richer name exposed in MCP)
 TOOLS.log_llm_turn = TOOLS.log_generation;
+
+// ── Run replay ─────────────────────────────────────────────────────────────────
+function computeStateAt(runId, targetSeq) {
+  if (!db) return null;
+  const events = db.getRunEvents(runId);
+  const slice = (targetSeq != null) ? events.slice(0, targetSeq) : events;
+  const savedState = state;
+  state = fresh();
+  suppressBroadcast = true;
+  suppressPersist   = true;
+  slice.forEach(ev => {
+    try {
+      const args = JSON.parse(ev.args);
+      const fn = TOOLS[ev.tool];
+      if (fn) fn(args);
+    } catch (_) {}
+  });
+  const snap = snapshot();
+  suppressBroadcast = false;
+  suppressPersist   = false;
+  state = savedState;
+  return snap;
+}
 
 // ── Demo scenarios ─────────────────────────────────────────────────────────────
 const SCENARIOS = {
@@ -528,8 +685,16 @@ function runScenario(name) {
   const s = SCENARIOS[name];
   if (!s) return false;
   const clients = state.clients;
+  // Delete the previous run if it was abandoned (clicked again before scenario finished)
+  if (db && state.runId && state.status !== 'done' && state.status !== 'error') {
+    try { db.deleteRun(state.runId); } catch (_) {}
+  }
   state = fresh();
   state.clients = clients;
+  resetAlertState();
+  // Pre-set runId so all scenario events (including register_agent) are persisted from step 0
+  state.runId = String(Date.now());
+  if (db) try { db.startRun(state.runId, s.goal, Date.now()); } catch (_) {}
   broadcast('reset', {});
   let cum = 0;
   s.steps.forEach(step => { cum += step.delay; setTimeout(() => { try { step.fn(); } catch (e) { console.error(e); } }, cum); });
@@ -542,7 +707,7 @@ const HTML = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8');
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 function body(req, cb) { let d = ''; req.on('data', c => d += c); req.on('end', () => cb(d)); }
@@ -602,6 +767,59 @@ const server = http.createServer((req, res) => {
     state = fresh(); state.clients = clients;
     broadcast('reset', {});
     json(res, { ok: true }); return;
+  }
+
+  // ── Run history API ────────────────────────────────────────────────────────
+  const u = new URL(req.url, `http://localhost`);
+  const pathname = u.pathname;
+
+  // GET /runs[?q=search] — list historical runs
+  if (req.method === 'GET' && pathname === '/runs') {
+    const q = u.searchParams.get('q') || '';
+    json(res, db ? db.listRuns({ q, limit: 50 }) : []); return;
+  }
+
+  // GET /runs/:id/state[?seq=N] — replay snapshot at event N
+  if (req.method === 'GET' && /^\/runs\/[^/]+\/state$/.test(pathname)) {
+    const runId = pathname.slice(6, -6);
+    const seq = parseInt(u.searchParams.get('seq') || '0') || 0;
+    const snap = computeStateAt(runId, seq);
+    if (!snap) { json(res, { error: 'Persistence disabled or run not found' }, 404); return; }
+    json(res, snap); return;
+  }
+
+  // GET /runs/:id — single run metadata (with event_count)
+  if (req.method === 'GET' && /^\/runs\/[^/]+$/.test(pathname)) {
+    const runId = pathname.slice(6);
+    const run = db ? db.getRun(runId) : null;
+    if (!run) { json(res, { error: 'Not found' }, 404); return; }
+    json(res, run); return;
+  }
+
+  // DELETE /runs/:id — delete a run and its events
+  if (req.method === 'DELETE' && /^\/runs\/[^/]+$/.test(pathname)) {
+    const runId = pathname.slice(6);
+    if (db) db.deleteRun(runId);
+    json(res, { ok: true }); return;
+  }
+
+  // GET /alerts/config — get current alert thresholds
+  if (req.method === 'GET' && pathname === '/alerts/config') {
+    json(res, alertConfig); return;
+  }
+
+  // POST /alerts/config — update alert thresholds / webhook
+  if (req.method === 'POST' && pathname === '/alerts/config') {
+    body(req, data => {
+      try {
+        const c = JSON.parse(data || '{}');
+        if ('webhookUrl'        in c) alertConfig.webhookUrl        = c.webhookUrl || null;
+        if ('tokenBudgetPct'    in c) alertConfig.tokenBudgetPct    = Math.max(1,  Math.min(100, Number(c.tokenBudgetPct)));
+        if ('stuckAgentSec'     in c) alertConfig.stuckAgentSec     = Math.max(10, Number(c.stuckAgentSec));
+        if ('criticFailRatePct' in c) alertConfig.criticFailRatePct = Math.max(1,  Math.min(100, Number(c.criticFailRatePct)));
+        json(res, alertConfig);
+      } catch (e) { json(res, { error: e.message }, 400); }
+    }); return;
   }
 
   json(res, { error: 'Not found' }, 404);
