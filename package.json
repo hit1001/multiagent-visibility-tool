@@ -1,19 +1,33 @@
 {
   "name": "agent-visibility",
-  "version": "0.1.0",
-  "description": "Real-time debug dashboard for multi-agent AI systems — topology graph, LLM turn inspector, tool call traces, memory panel",
+  "version": "0.3.0",
+  "description": "Real-time debug dashboard for multi-agent AI systems — topology graph, LLM turn inspector, tool call traces, memory panel, run history, replay, and webhook alerts",
   "main": "src/server.js",
   "bin": {
+    "agentscope": "bin/visibility.js",
     "visibility": "bin/visibility.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "adapters/",
+    "agentscope/"
+  ],
   "scripts": {
     "start": "node bin/visibility.js",
     "start:mcp": "node bin/visibility.js --mcp",
     "dev": "node bin/visibility.js --no-open"
   },
-  "keywords": ["agent", "llm", "debug", "visibility", "observability", "mcp", "multi-agent"],
+  "dependencies": {
+    "better-sqlite3": "^9.4.3"
+  },
+  "keywords": ["agent", "llm", "debug", "visibility", "observability", "mcp", "multi-agent", "langchain", "autogen", "crewai", "alerts"],
   "license": "MIT",
   "engines": {
     "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hit1001/multiagent-visibility-tool"
   }
 }
