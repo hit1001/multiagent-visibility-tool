@@ -2,7 +2,7 @@
 
 > The missing DevTools for multi-agent AI systems.
 
-[![PyPI](https://img.shields.io/pypi/v/mavt?style=flat&color=blue)](https://pypi.org/project/mavt/)
+[![npm](https://img.shields.io/npm/v/agent-visibility?style=flat&color=blue)](https://www.npmjs.com/package/agent-visibility)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/hit1001/multiagent-visibility-tool?style=flat)](https://github.com/hit1001/multiagent-visibility-tool/stargazers)
 
@@ -36,38 +36,75 @@ You open your terminal. You see... nothing useful.
 | | |
 |---|---|
 | 🔁 **Agent-to-agent traces** | See every message passed between agents, in order |
-| 🧠 **Decision step inspector** | Understand what reasoning led to each action |
-| 📊 **Live workflow graph** | Visual execution graph, updating in real time |
-| ⏱ **Execution timeline** | Spot bottlenecks and latency across your pipeline |
-| 🐛 **Real-time debug view** | No post-hoc log parsing — watch it live |
+| 🧠 **LLM turn inspector** | Full prompt/response history with token counts and latency |
+| 📊 **Live topology graph** | Visual execution graph, updating in real time |
+| 🛠 **Tool call traces** | Every tool invocation, input, output, and duration |
+| 🧩 **Memory panel** | Watch agent memory reads and writes as they happen |
+| 📜 **Run history & replay** | Browse past runs and replay them step by step |
+| 🔔 **Webhook alerts** | Get notified on token budget exceeded, agent stuck, critic failures |
 
 ---
 
 ## Get started in 60 seconds
 
 ```bash
-pip install mavt
+npm install -g agent-visibility
+agentscope
 ```
 
-```python
-from mavt import track_agents
-
-track_agents()  # That's it.
-```
-
-Open your browser → `http://localhost:7777`
+Open your browser → `http://localhost:4242`
 
 Your agents are now fully observable.
 
 ---
 
-## Works with
+## Framework adapters
 
-- ✅ **AgentScope** — supported now
-- 🔜 **LangChain** — coming soon
-- 🔜 **AutoGen** — coming soon  
-- 🔜 **CrewAI** — coming soon
-- 🔜 **Custom agents** — bring your own
+Drop-in Python adapters — two lines of code, full visibility.
+
+### LangChain
+
+```python
+from adapters.langchain import AgentscopeCallback
+
+AgentExecutor(agent=agent, tools=tools,
+              callbacks=[AgentscopeCallback(goal="My task")])
+```
+
+### AutoGen
+
+```python
+from adapters.autogen import track
+
+scope = track(agents=[orchestrator, researcher, coder], goal="My task")
+# ... run your agents ...
+scope.finish()
+```
+
+### CrewAI
+
+```python
+from adapters.crewai import AgentscopeListener
+
+listener = AgentscopeListener(goal="My task")
+crew = Crew(agents=[...], tasks=[...], step_callback=listener)
+result = crew.kickoff()
+listener.finish()
+```
+
+---
+
+## Webhook alerts
+
+Configure alerts directly from the dashboard sidebar:
+
+| Alert | Trigger |
+|---|---|
+| 💸 Token budget | Agent uses ≥ X% of its token budget |
+| ⏳ Agent stuck | Agent silent for more than N seconds |
+| ❌ Critic fail rate | Critic failure rate exceeds X% |
+
+Alerts appear as toast notifications in the UI and are POSTed to any webhook URL you configure.
 
 ---
 
@@ -89,15 +126,18 @@ MAVT is the foundation layer your agent stack is missing.
 
 ## Roadmap
 
-- [x] AgentScope integration
-- [x] Live workflow graph
-- [x] Agent-to-agent message tracing
-- [ ] LangChain integration
-- [ ] AutoGen integration
-- [ ] CrewAI integration
-- [ ] Metrics & cost tracking per agent
-- [ ] Export traces to JSON / OpenTelemetry
-- [ ] Cloud-hosted dashboard (optional)
+- [x] Live topology graph
+- [x] LLM turn inspector
+- [x] Tool call traces
+- [x] Memory panel
+- [x] Run history & replay
+- [x] LangChain adapter
+- [x] AutoGen adapter
+- [x] CrewAI adapter
+- [x] Webhook alerts
+- [ ] OpenTelemetry export
+- [ ] Cloud-hosted dashboard
+- [ ] Cost tracking per agent
 
 ---
 
@@ -123,4 +163,4 @@ multi-agent systems become, the harder they are to see inside.
 
 ---
 
-**MIT License** · [PyPI](https://pypi.org/project/mavt/) · [Issues](https://github.com/hit1001/multiagent-visibility-tool/issues)
+**MIT License** · [npm](https://www.npmjs.com/package/agent-visibility) · [Issues](https://github.com/hit1001/multiagent-visibility-tool/issues)
