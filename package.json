@@ -1,6 +1,6 @@
 {
   "name": "agent-visibility",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Real-time debug dashboard for multi-agent AI systems — topology graph, LLM turn inspector, tool call traces, memory panel, run history, replay, and webhook alerts",
   "main": "src/server.js",
   "bin": {
@@ -21,7 +21,19 @@
   "dependencies": {
     "better-sqlite3": "^9.4.3"
   },
-  "keywords": ["agent", "llm", "debug", "visibility", "observability", "mcp", "multi-agent", "langchain", "autogen", "crewai", "alerts"],
+  "keywords": [
+    "agent",
+    "llm",
+    "debug",
+    "visibility",
+    "observability",
+    "mcp",
+    "multi-agent",
+    "langchain",
+    "autogen",
+    "crewai",
+    "alerts"
+  ],
   "license": "MIT",
   "engines": {
     "node": ">=18"
