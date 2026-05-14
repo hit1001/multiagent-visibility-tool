@@ -1,10 +1,84 @@
 #!/usr/bin/env node
 'use strict';
-const http = require('http');
-const fs   = require('fs');
-const path = require('path');
+const http   = require('http');
+const https  = require('https');
+const fs     = require('fs');
+const path   = require('path');
+const crypto = require('crypto');
 
 const PORT = parseInt(process.env.VISIBILITY_PORT || '4242');
+
+// ── Auth ───────────────────────────────────────────────────────────────────────
+const PASSWORD = process.env.VISIBILITY_PASSWORD || null;
+const sessions = new Set(); // in-memory session tokens (single-user)
+const rateLimiters = new Map(); // keyId → { count, resetAt }
+
+function hashKey(raw) {
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+function parseCookies(str = '') {
+  return Object.fromEntries(str.split(';').map(p => p.trim().split('=').map(decodeURIComponent)));
+}
+function genToken() { return crypto.randomBytes(32).toString('hex'); }
+
+function checkAuth(req) {
+  if (!PASSWORD) return { ok: true, keyId: null };
+  // Session cookie
+  const cookies = parseCookies(req.headers['cookie'] || '');
+  if (cookies.agentscope_session && sessions.has(cookies.agentscope_session)) return { ok: true, keyId: null };
+  // API key header
+  const raw = req.headers['x-api-key'] || '';
+  if (raw && db) {
+    const row = db.getApiKeyByHash(hashKey(raw));
+    if (row) {
+      // Per-key rate limiting (requests per minute)
+      const now = Date.now();
+      let rl = rateLimiters.get(row.id) || { count: 0, resetAt: now + 60000 };
+      if (now > rl.resetAt) rl = { count: 0, resetAt: now + 60000 };
+      rl.count++;
+      rateLimiters.set(row.id, rl);
+      if (rl.count > row.rate_limit) return { ok: false, reason: 'rate_limit' };
+      db.touchApiKey(row.id);
+      return { ok: true, keyId: row.id };
+    }
+  }
+  return { ok: false, reason: 'unauthorized' };
+}
+
+// ── Licence ────────────────────────────────────────────────────────────────────
+const LICENCE_SECRET = 'mavt-licence-v1';
+const LICENCE_KEY    = process.env.VISIBILITY_LICENCE || null;
+
+function validateLicence(key) {
+  if (!key) return { valid: false };
+  try {
+    const parts = key.split('-'); // MAVT-TIER-YYYYMM-HMAC8
+    if (parts.length < 4 || parts[0] !== 'MAVT') return { valid: false };
+    const tier   = parts[1];          // TEAM | ENT
+    const expiry = parts[2];          // e.g. 202612
+    const hmac8  = parts[3];
+    const expected = crypto.createHmac('sha256', LICENCE_SECRET)
+      .update(tier + expiry).digest('hex').slice(0, 8);
+    if (hmac8 !== expected) return { valid: false };
+    const year = parseInt(expiry.slice(0, 4)), month = parseInt(expiry.slice(4, 6));
+    const expires = new Date(year, month - 1, 1); // first of expiry month
+    if (Date.now() > expires.getTime()) return { valid: false, reason: 'expired' };
+    return { valid: true, tier: tier.toLowerCase(), expires };
+  } catch { return { valid: false }; }
+}
+const licence = validateLicence(LICENCE_KEY);
+
+// ── Login HTML ─────────────────────────────────────────────────────────────────
+const LOGIN_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>agent-visibility — login</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#0f1117;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui,sans-serif}
+.card{background:#1a1d27;border:1px solid #2a2d3e;border-radius:12px;padding:40px;width:320px;text-align:center}
+h2{color:#e2e8f0;margin-bottom:8px;font-size:18px}p{color:#64748b;font-size:13px;margin-bottom:24px}
+input{width:100%;background:#0f1117;border:1px solid #2a2d3e;border-radius:8px;color:#e2e8f0;padding:10px 14px;font-size:14px;outline:none;margin-bottom:12px}
+input:focus{border-color:#8b7cf8}button{width:100%;background:#8b7cf8;border:none;border-radius:8px;color:#fff;padding:11px;font-size:14px;cursor:pointer;font-weight:600}
+button:hover{background:#7c6fe0}.err{color:#f87171;font-size:12px;margin-top:8px;min-height:16px}</style></head>
+<body><div class="card"><h2>agent-visibility</h2><p>Enter your dashboard password</p>
+<form method="POST" action="/auth/login"><input type="password" name="password" placeholder="Password" autofocus>
+<button type="submit">Sign in</button></form><div class="err" id="e">__ERR__</div></div></body></html>`;
 
 // ── Persistence (optional — degrades gracefully if better-sqlite3 absent) ─────
 let db = null;
@@ -52,11 +126,26 @@ function resetAlertState() {
 function fireAlert(type, data) {
   const payload = { alert: type, runId: state.runId, goal: state.goal, ...data, ts: Date.now() };
   broadcast('alert', payload);
+  if (db) try { db.appendAlert(type, data.detail || JSON.stringify(data), state.runId); } catch (_) {}
   if (!alertConfig.webhookUrl) return;
   try {
-    const u = new URL(alertConfig.webhookUrl);
-    const body = JSON.stringify(payload);
-    const mod  = u.protocol === 'https:' ? require('https') : require('http');
+    const u    = new URL(alertConfig.webhookUrl);
+    const mod  = u.protocol === 'https:' ? https : http;
+    let body;
+    if (u.hostname.includes('hooks.slack.com')) {
+      // Slack incoming webhook format
+      const icon = type === 'token_budget_exceeded' ? '💸' : type === 'agent_stuck' ? '⏳' : type === 'critic_fail_rate' ? '❌' : '⚠️';
+      body = JSON.stringify({ text: `${icon} *${type}* — ${state.goal}`, blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: `${icon} *${type}*\n${JSON.stringify(data)}` } },
+      ]});
+    } else if (u.hostname.includes('discord.com')) {
+      // Discord webhook format
+      body = JSON.stringify({ content: `**${type}** — ${state.goal}`, embeds: [
+        { title: type, description: JSON.stringify(data, null, 2), color: 0xf59e0b },
+      ]});
+    } else {
+      body = JSON.stringify(payload);
+    }
     const opts = {
       hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
       path: u.pathname + u.search, method: 'POST',
@@ -238,9 +327,31 @@ const TOOLS = {
   finish_run(a) {
     const { status = 'done' } = a;
     state.status = status;
-    if (db) try { db.finishRun(state.runId, status, Date.now(), { steps: state.metrics.steps, tokens: state.metrics.tokens }); } catch (_) {}
+    const finishedAt = Date.now();
+    if (db) try { db.finishRun(state.runId, status, finishedAt, { steps: state.metrics.steps, tokens: state.metrics.tokens }); } catch (_) {}
     persist('finish_run', a);
     broadcast('status', status);
+    // Check for run duration outlier
+    if (status === 'done' && state.startedAt && db) {
+      try {
+        const dur  = finishedAt - state.startedAt;
+        const past = db.getLastRunDurations(10);
+        if (past.length >= 3) {
+          const mean = past.reduce((s,v)=>s+v,0) / past.length;
+          const std  = Math.sqrt(past.reduce((s,v)=>s+(v-mean)**2,0) / past.length);
+          if (std > 0 && dur > mean + 2 * std) {
+            const key = `outlier:${state.runId}`;
+            if (!alertState.fired.has(key)) {
+              alertState.fired.add(key);
+              fireAlert('run_duration_outlier', {
+                duration_ms: dur, mean_ms: Math.round(mean), std_ms: Math.round(std),
+                detail: `Run took ${Math.round(dur/1000)}s vs avg ${Math.round(mean/1000)}s`,
+              });
+            }
+          }
+        }
+      } catch (_) {}
+    }
     return { ok: true };
   },
 
@@ -708,7 +819,7 @@ const HTML = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8');
 const CORS = {
   'Access-Control-Allow-Origin':  '*',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
 };
 function body(req, cb) { let d = ''; req.on('data', c => d += c); req.on('end', () => cb(d)); }
 function json(res, data, status = 200) {
@@ -720,15 +831,56 @@ function json(res, data, status = 200) {
 const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
 
+  const u2       = new URL(req.url, `http://localhost`);
+  const pathname = u2.pathname;
+
+  // ── Auth routes (always public) ────────────────────────────────────────────
+  if (req.method === 'GET' && pathname === '/login') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(LOGIN_HTML.replace('__ERR__', ''));
+    return;
+  }
+  if (req.method === 'POST' && pathname === '/auth/login') {
+    body(req, data => {
+      const params = new URLSearchParams(data);
+      const pwd    = params.get('password') || '';
+      if (PASSWORD && pwd === PASSWORD) {
+        const token = genToken();
+        sessions.add(token);
+        res.writeHead(302, { 'Set-Cookie': `agentscope_session=${token}; HttpOnly; Path=/`, Location: '/' });
+        res.end(); return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end(LOGIN_HTML.replace('__ERR__', 'Incorrect password'));
+    }); return;
+  }
+  if (req.method === 'POST' && pathname === '/auth/logout') {
+    const cookies = parseCookies(req.headers['cookie'] || '');
+    if (cookies.agentscope_session) sessions.delete(cookies.agentscope_session);
+    res.writeHead(302, { 'Set-Cookie': 'agentscope_session=; HttpOnly; Path=/; Max-Age=0', Location: '/login' });
+    res.end(); return;
+  }
+
+  // ── Auth gate ──────────────────────────────────────────────────────────────
+  const auth = checkAuth(req);
+  if (!auth.ok) {
+    if (auth.reason === 'rate_limit') { json(res, { error: 'Rate limit exceeded' }, 429); return; }
+    if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html' || pathname === '/events')) {
+      res.writeHead(302, { Location: '/login' }); res.end(); return;
+    }
+    json(res, { error: 'Unauthorized' }, 401); return;
+  }
+
+
   // Dashboard UI
-  if (req.method === 'GET' && (req.url === '/' || req.url === '/index.html')) {
+  if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(HTML);
     return;
   }
 
   // SSE stream
-  if (req.method === 'GET' && req.url === '/events') {
+  if (req.method === 'GET' && pathname === '/events') {
     res.writeHead(200, { ...CORS, 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
     res.write(`data: ${JSON.stringify({ type: 'init', payload: { state: snapshot() }, ts: Date.now() })}\n\n`);
     state.clients.push(res);
@@ -737,23 +889,24 @@ const server = http.createServer((req, res) => {
   }
 
   // Current state snapshot
-  if (req.method === 'GET' && req.url === '/state') {
+  if (req.method === 'GET' && pathname === '/state') {
     json(res, snapshot()); return;
   }
 
   // Tool call
-  if (req.method === 'POST' && req.url === '/tool') {
+  if (req.method === 'POST' && pathname === '/tool') {
     body(req, data => {
       try {
         const { tool, args } = JSON.parse(data);
         const fn = TOOLS[tool];
+        if (db && tool) try { db.appendAudit(auth.keyId, tool, state.runId); } catch (_) {}
         json(res, fn ? fn(args || {}) : { error: `Unknown tool: ${tool}` });
       } catch (e) { json(res, { error: e.message }, 400); }
     }); return;
   }
 
   // Run a demo scenario
-  if (req.method === 'POST' && req.url === '/emulate') {
+  if (req.method === 'POST' && pathname === '/emulate') {
     body(req, data => {
       const { scenario } = JSON.parse(data || '{}');
       const ok = runScenario(scenario || 'research_code');
@@ -762,7 +915,7 @@ const server = http.createServer((req, res) => {
   }
 
   // Reset state
-  if (req.method === 'POST' && req.url === '/reset') {
+  if (req.method === 'POST' && pathname === '/reset') {
     const clients = state.clients;
     state = fresh(); state.clients = clients;
     broadcast('reset', {});
@@ -770,19 +923,16 @@ const server = http.createServer((req, res) => {
   }
 
   // ── Run history API ────────────────────────────────────────────────────────
-  const u = new URL(req.url, `http://localhost`);
-  const pathname = u.pathname;
-
   // GET /runs[?q=search] — list historical runs
   if (req.method === 'GET' && pathname === '/runs') {
-    const q = u.searchParams.get('q') || '';
+    const q = u2.searchParams.get('q') || '';
     json(res, db ? db.listRuns({ q, limit: 50 }) : []); return;
   }
 
   // GET /runs/:id/state[?seq=N] — replay snapshot at event N
   if (req.method === 'GET' && /^\/runs\/[^/]+\/state$/.test(pathname)) {
     const runId = pathname.slice(6, -6);
-    const seq = parseInt(u.searchParams.get('seq') || '0') || 0;
+    const seq = parseInt(u2.searchParams.get('seq') || '0') || 0;
     const snap = computeStateAt(runId, seq);
     if (!snap) { json(res, { error: 'Persistence disabled or run not found' }, 404); return; }
     json(res, snap); return;
@@ -820,6 +970,74 @@ const server = http.createServer((req, res) => {
         json(res, alertConfig);
       } catch (e) { json(res, { error: e.message }, 400); }
     }); return;
+  }
+
+  // GET /alerts/history — recent fired alerts
+  if (req.method === 'GET' && pathname === '/alerts/history') {
+    const limit = parseInt(u2.searchParams.get('limit') || '50');
+    json(res, db ? db.listAlerts({ limit }) : []); return;
+  }
+
+  // ── API key management ─────────────────────────────────────────────────────
+  if (req.method === 'GET' && pathname === '/keys') {
+    json(res, db ? db.listApiKeys() : []); return;
+  }
+  if (req.method === 'POST' && pathname === '/keys') {
+    body(req, data => {
+      try {
+        if (!db) { json(res, { error: 'Persistence disabled' }, 503); return; }
+        const { label = '', rateLimit = 60, tokenBudget = null } = JSON.parse(data || '{}');
+        const raw = 'mavt_sk_' + crypto.randomBytes(16).toString('hex');
+        const id  = crypto.randomBytes(4).toString('hex');
+        db.createApiKey(id, label, hashKey(raw), rateLimit, tokenBudget);
+        json(res, { id, label, key: raw, rateLimit, tokenBudget, note: 'Save this key — it will not be shown again' });
+      } catch (e) { json(res, { error: e.message }, 400); }
+    }); return;
+  }
+  if (req.method === 'DELETE' && /^\/keys\/[^/]+$/.test(pathname)) {
+    const id = pathname.slice(6);
+    if (db) db.deleteApiKey(id);
+    json(res, { ok: true }); return;
+  }
+
+  // ── Audit log ──────────────────────────────────────────────────────────────
+  if (req.method === 'GET' && pathname === '/audit') {
+    const keyId = u2.searchParams.get('key_id') || null;
+    const limit = parseInt(u2.searchParams.get('limit') || '100');
+    const since = parseInt(u2.searchParams.get('since') || '0');
+    json(res, db ? db.listAudit({ keyId, limit, since }) : []); return;
+  }
+
+  // ── Export API ─────────────────────────────────────────────────────────────
+  if (req.method === 'GET' && /^\/export\/run\/[^/]+$/.test(pathname)) {
+    const runId = pathname.slice(12);
+    if (!db) { json(res, { error: 'Persistence disabled' }, 503); return; }
+    const run = db.getRun(runId);
+    if (!run) { json(res, { error: 'Not found' }, 404); return; }
+    const events = db.getRunEvents(runId);
+    const out = JSON.stringify({ run, events }, null, 2);
+    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json', 'Content-Disposition': `attachment; filename="run-${runId}.json"` });
+    res.end(out); return;
+  }
+  if (req.method === 'GET' && pathname === '/export/runs') {
+    if (!db) { json(res, { error: 'Persistence disabled' }, 503); return; }
+    const since  = parseInt(u2.searchParams.get('since') || '0');
+    const status = u2.searchParams.get('status') || null;
+    const limit  = parseInt(u2.searchParams.get('limit') || '100');
+    const runs   = db.exportRuns({ since, status, limit });
+    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="runs-export.json"' });
+    res.end(JSON.stringify(runs, null, 2)); return;
+  }
+
+  // ── Data API (licence-gated) ───────────────────────────────────────────────
+  if (req.method === 'GET' && pathname === '/api/v1/metrics') {
+    if (!licence.valid) { json(res, { error: 'Licence required', upgrade: 'https://agentscope.dev/pricing' }, 402); return; }
+    json(res, db ? db.getMetrics() : { error: 'Persistence disabled' }); return;
+  }
+
+  // GET /licence/status — for dashboard badge
+  if (req.method === 'GET' && pathname === '/licence/status') {
+    json(res, { valid: licence.valid, tier: licence.tier || null, expires: licence.expires || null }); return;
   }
 
   json(res, { error: 'Not found' }, 404);

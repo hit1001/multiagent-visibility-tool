@@ -1,6 +1,6 @@
 {
   "name": "agent-visibility",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Real-time debug dashboard for multi-agent AI systems — topology graph, LLM turn inspector, tool call traces, memory panel, run history, replay, and webhook alerts",
   "main": "src/server.js",
   "bin": {
