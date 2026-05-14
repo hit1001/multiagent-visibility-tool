@@ -235,6 +235,47 @@ canvas{display:block;width:100%}
 .alert-detail{font-size:11px;color:var(--muted);line-height:1.4;word-break:break-word}
 .alert-dismiss{background:transparent;border:none;color:var(--muted);cursor:pointer;font-size:12px;padding:0;line-height:1;flex-shrink:0;pointer-events:auto}
 .alert-dismiss:hover{color:var(--text)}
+.alert-pill.outlier{border-left:3px solid var(--purple)}
+.alert-pill.outlier .alert-type{color:var(--purple)}
+
+/* ── Alert history panel ── */
+.alert-history{padding:6px 14px 10px;border-top:1px solid var(--border);flex-shrink:0;max-height:140px;overflow-y:auto}
+.alert-history::-webkit-scrollbar{width:2px}.alert-history::-webkit-scrollbar-thumb{background:var(--bg3)}
+.alert-hist-row{display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04)}
+.alert-hist-row:last-child{border-bottom:none}
+.alert-hist-type{font-size:9px;font-weight:600;letter-spacing:.04em;padding:1px 5px;border-radius:3px;flex-shrink:0}
+.alert-hist-detail{font-size:10px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.alert-hist-time{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--muted);flex-shrink:0}
+
+/* ── Licence badge ── */
+.licence-badge{font-size:10px;padding:3px 8px;border-radius:10px;border:1px solid;font-weight:600;white-space:nowrap}
+.licence-badge.valid{border-color:var(--green);color:var(--green)}
+.licence-badge.none{border-color:var(--border);color:var(--muted);cursor:pointer}
+.licence-badge.none:hover{border-color:var(--purple);color:var(--purple)}
+
+/* ── Key modal ── */
+.key-modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:100;display:none;align-items:center;justify-content:center}
+.key-modal-overlay.visible{display:flex}
+.key-modal-box{background:var(--bg2);border:1px solid var(--border2);border-radius:12px;padding:20px;width:540px;max-width:90vw;max-height:80vh;overflow-y:auto;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+.key-table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px}
+.key-table th{text-align:left;padding:5px 8px;border-bottom:1px solid var(--border);color:var(--muted);font-weight:600;font-size:10px;text-transform:uppercase;letter-spacing:.06em}
+.key-table td{padding:5px 8px;border-bottom:1px solid rgba(255,255,255,.04);color:var(--text)}
+.key-table tr:last-child td{border-bottom:none}
+.key-del-btn{background:transparent;border:1px solid var(--border);border-radius:4px;color:var(--muted);font-size:10px;padding:2px 6px;cursor:pointer}
+.key-del-btn:hover{border-color:var(--coral);color:var(--coral)}
+.key-gen-form{display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;padding-top:8px;border-top:1px solid var(--border)}
+.key-gen-form input{background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:'Inter',sans-serif;font-size:12px;padding:6px 10px;outline:none;flex:1;min-width:0}
+.key-gen-form input:focus{border-color:var(--purple)}
+.key-gen-btn{background:var(--purple);border:none;border-radius:6px;color:#fff;font-size:12px;padding:6px 14px;cursor:pointer;font-family:'Inter',sans-serif;white-space:nowrap}
+.key-gen-btn:hover{background:#7c6fe0}
+.key-result{background:var(--bg3);border:1px solid var(--teal);border-radius:7px;padding:10px 12px;margin-top:10px;display:none}
+.key-result-label{font-size:10px;font-weight:600;color:var(--teal);margin-bottom:4px}
+.key-result-val{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text);word-break:break-all}
+.key-result-warn{font-size:10px;color:var(--amber);margin-top:4px}
+
+/* ── Export button ── */
+.run-export-btn{background:transparent;border:none;color:var(--muted);font-size:12px;cursor:pointer;padding:0 2px;line-height:1;flex-shrink:0}
+.run-export-btn:hover{color:var(--teal)}
 </style>
 </head>
 <body>
@@ -247,6 +288,7 @@ canvas{display:block;width:100%}
   <span class="spinner" id="spinner"></span>
   <span class="badge" id="run-status">idle</span>
   <span class="badge dead" id="conn-badge">connecting…</span>
+  <span class="licence-badge none" id="licence-badge" onclick="openKeyModal()" title="Manage API keys / licence">🔑 Keys</span>
   <button class="btn-reset" onclick="doReset()">Reset</button>
 </div>
 
@@ -307,6 +349,8 @@ canvas{display:block;width:100%}
           <button class="alert-save-btn" onclick="saveAlertConfig()">Save</button>
         </div>
       </div>
+      <!-- alert history -->
+      <div class="alert-history" id="alert-history-list"></div>
     </div>
 
     <!-- history section -->
@@ -366,6 +410,30 @@ canvas{display:block;width:100%}
 
 <!-- alert toasts -->
 <div class="alert-toast" id="alert-toast"></div>
+
+<!-- API key modal -->
+<div id="key-modal" class="key-modal-overlay" onclick="if(event.target===this)closeKeyModal()">
+  <div class="key-modal-box">
+    <div class="modal-title">
+      🔑 API Keys
+      <button class="modal-close-btn" onclick="closeKeyModal()">×</button>
+    </div>
+    <table class="key-table">
+      <thead><tr><th>Label</th><th>Rate limit</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+      <tbody id="key-list-body"><tr><td colspan="5" style="color:var(--muted);font-style:italic">No keys yet</td></tr></tbody>
+    </table>
+    <div class="key-gen-form">
+      <input id="key-label-inp" placeholder="Label (e.g. langchain-prod)" type="text">
+      <input id="key-rl-inp" placeholder="Rate/min" type="number" value="60" style="width:80px;flex:none">
+      <button class="key-gen-btn" onclick="generateKey()">Generate key</button>
+    </div>
+    <div class="key-result" id="key-result">
+      <div class="key-result-label">New API key — copy it now</div>
+      <div class="key-result-val" id="key-result-val"></div>
+      <div class="key-result-warn">⚠ This key will not be shown again</div>
+    </div>
+  </div>
+</div>
 
 <!-- compare modal -->
 <div id="compare-modal" class="modal-overlay" onclick="if(event.target===this)closeCompare()">
@@ -1037,6 +1105,7 @@ function renderRuns(runs) {
         `<span class="run-time">${relTime(run.started_at)}</span>`+
         (steps!=null?`<span class="run-steps">${steps} steps</span>`:'') +
         (agents.length?`<span class="run-agents">${agents.length} agent${agents.length>1?'s':''}</span>`:'')+
+        `<button class="run-export-btn" title="Download run JSON" onclick="downloadRun(event,'${run.id}')">↓</button>`+
         `<button class="run-delete-btn" title="Delete run" onclick="deleteRun(event,'${run.id}')">✕</button>`+
       `</div>`;
     card.addEventListener('click', () => loadRunReplay(run.id, run.goal));
@@ -1234,9 +1303,10 @@ async function saveAlertConfig() {
 
 // ── Alert toast ───────────────────────────────────────────────────────────────
 const ALERT_META = {
-  token_budget_exceeded: { cls:'token', icon:'⚠️', label:'Token budget',  detail: d => `${d.agent} at ${d.pct}% of ${d.budget?.toLocaleString()} budget` },
-  agent_stuck:           { cls:'stuck', icon:'🔴', label:'Agent stuck',   detail: d => `${d.agent} idle for ${d.idle_sec}s` },
-  critic_fail_rate:      { cls:'critic', icon:'📉', label:'Critic failing', detail: d => `${d.rate}% fail rate (${d.fails}/${d.total} events)` },
+  token_budget_exceeded: { cls:'token',   icon:'⚠️',  label:'Token budget',   detail: d => `${d.agent} at ${d.pct}% of ${d.budget?.toLocaleString()} budget` },
+  agent_stuck:           { cls:'stuck',   icon:'🔴',  label:'Agent stuck',    detail: d => `${d.agent} idle for ${d.idle_sec}s` },
+  critic_fail_rate:      { cls:'critic',  icon:'📉',  label:'Critic failing', detail: d => `${d.rate}% fail rate (${d.fails}/${d.total} events)` },
+  run_duration_outlier:  { cls:'outlier', icon:'⏱️',  label:'Slow run',       detail: d => d.detail || `${Math.round((d.duration_ms||0)/1000)}s (avg ${Math.round((d.mean_ms||0)/1000)}s)` },
 };
 
 function showAlertToast(payload) {
@@ -1259,8 +1329,87 @@ function showAlertToast(payload) {
   setTimeout(() => { if (pill.parentNode) pill.style.opacity='0'; setTimeout(() => pill.remove(), 300); }, 8000);
 }
 
+// ── Alert history ─────────────────────────────────────────────────────────────
+async function loadAlertHistory() {
+  try {
+    const rows = await fetch(SERVER+'/alerts/history?limit=20').then(r=>r.json());
+    const el = document.getElementById('alert-history-list');
+    if (!rows.length) { el.innerHTML = ''; return; }
+    el.innerHTML = rows.map(r => {
+      const meta = ALERT_META[r.type] || { icon:'ℹ️', cls:'token' };
+      const ago  = relTime(r.fired_at);
+      return `<div class="alert-hist-row">`+
+        `<span class="alert-hist-type" style="color:var(--amber)">${meta.icon} ${r.type.replace(/_/g,' ')}</span>`+
+        `<span class="alert-hist-detail">${r.detail||''}</span>`+
+        `<span class="alert-hist-time">${ago}</span></div>`;
+    }).join('');
+  } catch (_) {}
+}
+
+// ── Licence badge ─────────────────────────────────────────────────────────────
+async function loadLicenceStatus() {
+  try {
+    const s = await fetch(SERVER+'/licence/status').then(r=>r.json());
+    const el = document.getElementById('licence-badge');
+    if (s.valid) {
+      el.textContent = `✓ ${s.tier==='enterprise'?'Enterprise':'Team'}`;
+      el.className = 'licence-badge valid';
+      el.onclick = openKeyModal;
+    }
+  } catch (_) {}
+}
+
+// ── Export run ────────────────────────────────────────────────────────────────
+function downloadRun(e, runId) {
+  e.stopPropagation();
+  const a = document.createElement('a');
+  a.href = `${SERVER}/export/run/${runId}`;
+  a.download = `run-${runId}.json`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+
+// ── API key modal ─────────────────────────────────────────────────────────────
+function openKeyModal()  { loadKeys(); document.getElementById('key-modal').classList.add('visible'); }
+function closeKeyModal() { document.getElementById('key-modal').classList.remove('visible'); document.getElementById('key-result').style.display='none'; }
+
+async function loadKeys() {
+  try {
+    const keys = await fetch(SERVER+'/keys').then(r=>r.json());
+    const tbody = document.getElementById('key-list-body');
+    if (!keys.length) { tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);font-style:italic">No keys yet</td></tr>'; return; }
+    tbody.innerHTML = keys.map(k => {
+      const created = new Date(k.created_at).toLocaleDateString();
+      const used    = k.last_used ? relTime(k.last_used) : '—';
+      return `<tr><td>${k.label||'—'}</td><td>${k.rate_limit}/min</td><td>${created}</td><td>${used}</td>`+
+        `<td><button class="key-del-btn" onclick="deleteKey('${k.id}')">Revoke</button></td></tr>`;
+    }).join('');
+  } catch (_) {}
+}
+
+async function generateKey() {
+  const label = document.getElementById('key-label-inp').value.trim();
+  const rl    = parseInt(document.getElementById('key-rl-inp').value) || 60;
+  try {
+    const res = await fetch(SERVER+'/keys', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ label, rateLimit: rl }) });
+    const data = await res.json();
+    if (data.key) {
+      document.getElementById('key-result-val').textContent = data.key;
+      document.getElementById('key-result').style.display = 'block';
+      document.getElementById('key-label-inp').value = '';
+      loadKeys();
+    }
+  } catch (_) { alert('Could not reach server'); }
+}
+
+async function deleteKey(id) {
+  if (!confirm('Revoke this API key?')) return;
+  try { await fetch(`${SERVER}/keys/${id}`, { method:'DELETE' }); loadKeys(); } catch (_) {}
+}
+
 // Load config on page ready
 setTimeout(loadAlertConfig, 1000);
+setTimeout(loadLicenceStatus, 1000);
+setTimeout(loadAlertHistory, 1200);
 </script>
 </body>
 </html>

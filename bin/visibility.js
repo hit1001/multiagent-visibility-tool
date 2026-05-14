@@ -3,11 +3,13 @@
  * visibility — agent-visibility CLI
  *
  * Usage:
- *   visibility                  dashboard on :4242, opens browser
- *   visibility --mcp            dashboard + MCP bridge on :4243
- *   visibility --port 5000      custom dashboard port
- *   visibility --mcp-port 5001  custom MCP port
- *   visibility --no-open        don't auto-open browser
+ *   visibility                        dashboard on :4242, opens browser
+ *   visibility --mcp                  dashboard + MCP bridge on :4243
+ *   visibility --port 5000            custom dashboard port
+ *   visibility --mcp-port 5001        custom MCP port
+ *   visibility --no-open              don't auto-open browser
+ *   visibility --password mypassword  password-protect the dashboard
+ *   visibility --licence MAVT-TEAM-202612-xxxx  unlock data API
  *   visibility --help
  */
 'use strict';
@@ -15,13 +17,15 @@ const path = require('path');
 const { execSync, spawn } = require('child_process');
 
 const argv  = process.argv.slice(2);
-const flags = { mcp:false, noOpen:false, help:false, port:4242, mcpPort:4243 };
+const flags = { mcp:false, noOpen:false, help:false, port:4242, mcpPort:4243, password:null, licence:null };
 for (let i = 0; i < argv.length; i++) {
-  if (argv[i] === '--mcp')                      flags.mcp     = true;
-  if (argv[i] === '--no-open')                  flags.noOpen  = true;
-  if (argv[i] === '--help' || argv[i] === '-h') flags.help    = true;
-  if (argv[i] === '--port'     && argv[i+1])    flags.port    = parseInt(argv[++i]);
-  if (argv[i] === '--mcp-port' && argv[i+1])    flags.mcpPort = parseInt(argv[++i]);
+  if (argv[i] === '--mcp')                      flags.mcp      = true;
+  if (argv[i] === '--no-open')                  flags.noOpen   = true;
+  if (argv[i] === '--help' || argv[i] === '-h') flags.help     = true;
+  if (argv[i] === '--port'     && argv[i+1])    flags.port     = parseInt(argv[++i]);
+  if (argv[i] === '--mcp-port' && argv[i+1])    flags.mcpPort  = parseInt(argv[++i]);
+  if (argv[i] === '--password' && argv[i+1])    flags.password = argv[++i];
+  if (argv[i] === '--licence'  && argv[i+1])    flags.licence  = argv[++i];
 }
 
 if (flags.help) {
@@ -29,11 +33,13 @@ if (flags.help) {
   agent-visibility
 
   Commands:
-    visibility                  dashboard on :4242, opens browser
-    visibility --mcp            dashboard + MCP bridge on :4243
-    visibility --port 5000      custom dashboard port
-    visibility --mcp-port 5001  custom MCP port
-    visibility --no-open        suppress auto browser open
+    visibility                          dashboard on :4242, opens browser
+    visibility --mcp                    dashboard + MCP bridge on :4243
+    visibility --port 5000              custom dashboard port
+    visibility --mcp-port 5001          custom MCP port
+    visibility --no-open                suppress auto browser open
+    visibility --password <pwd>         password-protect the dashboard
+    visibility --licence <key>          unlock data API (MAVT-TEAM-yyyymm-xxxx)
     visibility --help
 
   MCP config (after running with --mcp):
@@ -42,7 +48,13 @@ if (flags.help) {
   process.exit(0);
 }
 
-const env = { ...process.env, VISIBILITY_PORT: String(flags.port), VISIBILITY_MCP_PORT: String(flags.mcpPort) };
+const env = {
+  ...process.env,
+  VISIBILITY_PORT:     String(flags.port),
+  VISIBILITY_MCP_PORT: String(flags.mcpPort),
+  ...(flags.password && { VISIBILITY_PASSWORD: flags.password }),
+  ...(flags.licence  && { VISIBILITY_LICENCE:  flags.licence  }),
+};
 const children = [];
 
 function spawn_(script) {
