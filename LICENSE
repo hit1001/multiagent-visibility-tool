@@ -1,6 +1,10 @@
-MIT License
+agent-visibility is dual-licensed.
 
-Copyright (c) 2026 Hitarth Rajendra Bhatt
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LICENSE A — MIT (Free for individuals and small teams)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Copyright (c) 2025 agent-visibility contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +23,42 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Applies to:
+  - Individual developers (personal projects)
+  - Teams of fewer than 10 people
+  - Open source projects
+  - Non-commercial use and evaluation
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+LICENSE B — Commercial License (Required for commercial use)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A commercial license is required if ANY of the following apply:
+
+  1. Your organisation has 10 or more people
+  2. You use agent-visibility in a product or service that generates revenue
+  3. You offer agent-visibility as a hosted or managed service
+  4. You integrate agent-visibility into a commercial product
+
+Tiers:
+
+  Solo        €99 / month   — 1 developer, commercial use
+  Team        €299 / month  — up to 10 developers
+  Enterprise  €999 / month  — unlimited developers, priority support,
+                              audit log, SLA guarantee
+
+To purchase or request a 30-day free trial:
+  → Open an issue on GitHub or email: hitarthbhatt2@gmail.com
+
+Using agent-visibility commercially without a valid license is a
+violation of this agreement.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  Individual / open source / evaluation  →  MIT (free)
+  Commercial / team / enterprise         →  Commercial license required
+
+Questions? Open an issue on GitHub.
