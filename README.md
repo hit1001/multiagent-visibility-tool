@@ -163,4 +163,4 @@ multi-agent systems become, the harder they are to see inside.
 
 ---
 
-**MIT License** · [npm](https://www.npmjs.com/package/agent-visibility) · [Issues](https://github.com/hit1001/multiagent-visibility-tool/issues)
+**Dual License** · [npm](https://www.npmjs.com/package/agent-visibility) · [Issues](https://github.com/hit1001/multiagent-visibility-tool/issues)
