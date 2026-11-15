@@ -16,6 +16,7 @@ Requires: pip install langchain-core requests
 
 from __future__ import annotations
 
+import os
 import time
 import threading
 from typing import Any, Dict, List, Optional, Union
@@ -27,8 +28,11 @@ import requests
 class AgentscopeCallback:
     """LangChain BaseCallbackHandler that streams events to the agentscope dashboard."""
 
-    def __init__(self, url: str = "http://localhost:4242", goal: str = ""):
+    def __init__(self, url: str = "http://localhost:4242", goal: str = "", api_key: Optional[str] = None):
         self.url = url.rstrip("/")
+        # Needed when the dashboard runs with --password; create one in the dashboard's Keys panel.
+        key = api_key or os.environ.get("VISIBILITY_API_KEY")
+        self._headers = {"X-API-Key": key} if key else {}
         self._goal = goal
         self._run_id = str(int(time.time() * 1000))
         self._goal_set = False
@@ -44,6 +48,7 @@ class AgentscopeCallback:
             requests.post(
                 f"{self.url}/tool",
                 json={"tool": tool, "args": args},
+                headers=self._headers,
                 timeout=2,
             )
         except Exception:

@@ -15,7 +15,10 @@
 const http = require('http');
 
 const MCP_PORT     = parseInt(process.env.VISIBILITY_MCP_PORT || '4243');
-const DASHBOARD    = `http://localhost:${process.env.VISIBILITY_PORT || '4242'}`;
+const DASH_HOST    = [undefined, '', '0.0.0.0', '::'].includes(process.env.VISIBILITY_HOST) ? '127.0.0.1' : process.env.VISIBILITY_HOST;
+const DASHBOARD    = `http://${DASH_HOST.includes(':') ? `[${DASH_HOST}]` : DASH_HOST}:${process.env.VISIBILITY_PORT || '4242'}`;
+const INTERNAL_TOKEN = process.env.VISIBILITY_INTERNAL_TOKEN || null; // lets the bridge through a password-protected dashboard
+const LOOPBACK     = new Set(['127.0.0.1', 'localhost', '::1']);
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 const TOOLS = [
@@ -37,7 +40,8 @@ function forward(tool, args) {
     const body = JSON.stringify({ tool, args });
     const req = http.request(DASHBOARD + '/tool', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+                 ...(INTERNAL_TOKEN && { 'X-Internal-Token': INTERNAL_TOKEN }) },
     }, res => {
       let data = '';
       res.on('data', c => data += c);
@@ -70,10 +74,19 @@ async function handleMsg(msg, send) {
 
 // ── HTTP server (SSE transport) ────────────────────────────────────────────────
 const sessions = new Map();
-const CORS = { 'Access-Control-Allow-Origin':'*', 'Access-Control-Allow-Methods':'GET, POST, OPTIONS', 'Access-Control-Allow-Headers':'Content-Type, Accept' };
+const CORS = {};
 function readBody(req, cb) { let d=''; req.on('data', c=>d+=c); req.on('end', ()=>cb(d)); }
+const hostname = h => (h || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+// Only local clients: reject DNS-rebound Host headers and pages from non-local origins.
+function localRequest(req) {
+  if (!LOOPBACK.has(hostname(req.headers['host']))) return false;
+  const origin = req.headers['origin'];
+  if (!origin) return true;
+  try { return LOOPBACK.has(hostname(new URL(origin).host)); } catch { return false; }
+}
 
 http.createServer((req, res) => {
+  if (!localRequest(req)) { res.writeHead(403, { 'Content-Type':'application/json' }); res.end('{"error":"Forbidden"}'); return; }
   if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
 
   if (req.method === 'GET' && req.url === '/sse') {
@@ -106,7 +119,7 @@ http.createServer((req, res) => {
   }
 
   res.writeHead(404, { ...CORS, 'Content-Type':'application/json' }); res.end('{"error":"Not found"}');
-}).listen(MCP_PORT, () => {
+}).listen(MCP_PORT, '127.0.0.1', () => {
   console.log(`\n  agentscope — MCP bridge\n`);
   console.log(`  SSE:       http://localhost:${MCP_PORT}/sse`);
   console.log(`  Dashboard: ${DASHBOARD}\n`);

@@ -22,6 +22,7 @@ Requires: pip install pyautogen requests   (or pip install autogen-agentchat)
 from __future__ import annotations
 
 import functools
+import os
 import time
 import threading
 from typing import Any, Dict, List, Optional
@@ -33,13 +34,14 @@ def track(
     agents: List[Any],
     goal: str = "",
     url: str = "http://localhost:4242",
+    api_key: Optional[str] = None,
 ) -> "_AgentscopeAutoGen":
     """
     Patch a list of AutoGen agents and start a visibility run.
 
     Returns a scope object; call scope.finish() when done.
     """
-    scope = _AgentscopeAutoGen(url=url, goal=goal)
+    scope = _AgentscopeAutoGen(url=url, goal=goal, api_key=api_key)
     for agent in agents:
         scope._patch(agent)
     scope._start()
@@ -47,8 +49,11 @@ def track(
 
 
 class _AgentscopeAutoGen:
-    def __init__(self, url: str, goal: str):
+    def __init__(self, url: str, goal: str, api_key: Optional[str] = None):
         self.url = url.rstrip("/")
+        # Needed when the dashboard runs with --password; create one in the dashboard's Keys panel.
+        key = api_key or os.environ.get("VISIBILITY_API_KEY")
+        self._headers = {"X-API-Key": key} if key else {}
         self._goal = goal
         self._run_id = str(int(time.time() * 1000))
         self._lock = threading.Lock()
@@ -61,6 +66,7 @@ class _AgentscopeAutoGen:
             requests.post(
                 f"{self.url}/tool",
                 json={"tool": tool, "args": args},
+                headers=self._headers,
                 timeout=2,
             )
         except Exception:

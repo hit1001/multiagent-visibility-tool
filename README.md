@@ -105,6 +105,21 @@ result = crew.kickoff()
 listener.finish()
 ```
 
+If the dashboard is password-protected, create an API key in the dashboard's **Keys** panel and pass it as `api_key="mavt_sk_..."` to any adapter, or set `VISIBILITY_API_KEY`.
+
+---
+
+## Security
+
+Traces contain your prompts and model outputs, so the dashboard is locked down by default:
+
+- **Local only.** It listens on `127.0.0.1`. To share it on a network, pass `--host 0.0.0.0` **and** `--password <pwd>`; it refuses to start on a non-local address without a password.
+- **No cross-site access.** Requests from other websites are rejected (no CORS, `Origin` and `Host` checks against DNS rebinding). To allow one specific browser origin, set `VISIBILITY_CORS_ORIGIN`.
+- **Password mode.** `--password` protects the dashboard (session cookie, `HttpOnly`, `SameSite=Strict`); agents authenticate with API keys (`X-API-Key`). The `--mcp` bridge is authenticated automatically.
+- **MCP bridge** (`:4243`) accepts local connections only.
+
+Commercial licence keys (`--licence MAVT-TEAM-YYYYMM-<signature>`) are Ed25519-signed and verified offline.
+
 ---
 
 ## Webhook alerts

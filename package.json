@@ -16,7 +16,8 @@
   "scripts": {
     "start": "node bin/visibility.js",
     "start:mcp": "node bin/visibility.js --mcp",
-    "dev": "node bin/visibility.js --no-open"
+    "dev": "node bin/visibility.js --no-open",
+    "test": "node --test test/"
   },
   "dependencies": {
     "better-sqlite3": "^13.2.0"

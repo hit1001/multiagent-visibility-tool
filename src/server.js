@@ -7,22 +7,55 @@ const path   = require('path');
 const crypto = require('crypto');
 
 const PORT = parseInt(process.env.VISIBILITY_PORT || '4242');
+const HOST = process.env.VISIBILITY_HOST || '127.0.0.1';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const IS_LOOPBACK = LOOPBACK_HOSTS.has(HOST);
 
 // ── Auth ───────────────────────────────────────────────────────────────────────
 const PASSWORD = process.env.VISIBILITY_PASSWORD || null;
+const INTERNAL_TOKEN = process.env.VISIBILITY_INTERNAL_TOKEN || null; // set by the CLI for the MCP bridge
 const sessions = new Set(); // in-memory session tokens (single-user)
 const rateLimiters = new Map(); // keyId → { count, resetAt }
 
+// Exposing the dashboard beyond this machine without a password would publish every trace.
+if (!IS_LOOPBACK && !PASSWORD) {
+  console.error(`[agentscope] Refusing to listen on ${HOST} without a password. Set --password (VISIBILITY_PASSWORD) or use the default 127.0.0.1.`);
+  process.exit(1);
+}
+
 function hashKey(raw) {
   return crypto.createHash('sha256').update(raw).digest('hex');
+}
+function safeEqual(a, b) {
+  // Compare digests so neither length nor content leaks through timing.
+  return crypto.timingSafeEqual(crypto.createHash('sha256').update(String(a)).digest(),
+                                crypto.createHash('sha256').update(String(b)).digest());
 }
 function parseCookies(str = '') {
   return Object.fromEntries(str.split(';').map(p => p.trim().split('=').map(decodeURIComponent)));
 }
 function genToken() { return crypto.randomBytes(32).toString('hex'); }
 
+// ── Request origin checks ──────────────────────────────────────────────────────
+// Block DNS-rebinding: on loopback, only accept requests addressed to a loopback name.
+function hostAllowed(req) {
+  if (!IS_LOOPBACK) return true;
+  const host = (req.headers['host'] || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  return LOOPBACK_HOSTS.has(host);
+}
+// Block cross-site requests: browsers send Origin on cross-origin POST/DELETE, so it must match Host.
+function originAllowed(req) {
+  const origin = req.headers['origin'];
+  if (!origin) return true; // non-browser clients (adapters, MCP bridge, curl)
+  if (process.env.VISIBILITY_CORS_ORIGIN && origin === process.env.VISIBILITY_CORS_ORIGIN) return true;
+  try { return new URL(origin).host === req.headers['host']; } catch { return false; }
+}
+
 function checkAuth(req) {
   if (!PASSWORD) return { ok: true, keyId: null };
+  if (INTERNAL_TOKEN && req.headers['x-internal-token'] && safeEqual(req.headers['x-internal-token'], INTERNAL_TOKEN)) {
+    return { ok: true, keyId: 'mcp-bridge' };
+  }
   // Session cookie
   const cookies = parseCookies(req.headers['cookie'] || '');
   if (cookies.agentscope_session && sessions.has(cookies.agentscope_session)) return { ok: true, keyId: null };
@@ -46,27 +79,8 @@ function checkAuth(req) {
 }
 
 // ── Licence ────────────────────────────────────────────────────────────────────
-const LICENCE_SECRET = 'mavt-licence-v1';
-const LICENCE_KEY    = process.env.VISIBILITY_LICENCE || null;
-
-function validateLicence(key) {
-  if (!key) return { valid: false };
-  try {
-    const parts = key.split('-'); // MAVT-TIER-YYYYMM-HMAC8
-    if (parts.length < 4 || parts[0] !== 'MAVT') return { valid: false };
-    const tier   = parts[1];          // TEAM | ENT
-    const expiry = parts[2];          // e.g. 202612
-    const hmac8  = parts[3];
-    const expected = crypto.createHmac('sha256', LICENCE_SECRET)
-      .update(tier + expiry).digest('hex').slice(0, 8);
-    if (hmac8 !== expected) return { valid: false };
-    const year = parseInt(expiry.slice(0, 4)), month = parseInt(expiry.slice(4, 6));
-    const expires = new Date(year, month - 1, 1); // first of expiry month
-    if (Date.now() > expires.getTime()) return { valid: false, reason: 'expired' };
-    return { valid: true, tier: tier.toLowerCase(), expires };
-  } catch { return { valid: false }; }
-}
-const licence = validateLicence(LICENCE_KEY);
+const { validateLicence } = require('./licence');
+const licence = validateLicence(process.env.VISIBILITY_LICENCE || null);
 
 // ── Login HTML ─────────────────────────────────────────────────────────────────
 const LOGIN_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>agent-visibility — login</title>
@@ -817,9 +831,13 @@ const HTML = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8');
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 const CORS = {
-  'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
+  // The dashboard is served same-origin; other browser origins must be allowed explicitly.
+  ...(process.env.VISIBILITY_CORS_ORIGIN && {
+    'Access-Control-Allow-Origin':  process.env.VISIBILITY_CORS_ORIGIN,
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
+    'Vary': 'Origin',
+  }),
 };
 function body(req, cb) { let d = ''; req.on('data', c => d += c); req.on('end', () => cb(d)); }
 function json(res, data, status = 200) {
@@ -829,6 +847,8 @@ function json(res, data, status = 200) {
 
 // ── HTTP server ────────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
+  if (!hostAllowed(req))   { json(res, { error: 'Invalid Host header' }, 421); return; }
+  if (!originAllowed(req)) { json(res, { error: 'Cross-origin request blocked' }, 403); return; }
   if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
 
   const u2       = new URL(req.url, `http://localhost`);
@@ -844,10 +864,10 @@ const server = http.createServer((req, res) => {
     body(req, data => {
       const params = new URLSearchParams(data);
       const pwd    = params.get('password') || '';
-      if (PASSWORD && pwd === PASSWORD) {
+      if (PASSWORD && safeEqual(pwd, PASSWORD)) {
         const token = genToken();
         sessions.add(token);
-        res.writeHead(302, { 'Set-Cookie': `agentscope_session=${token}; HttpOnly; Path=/`, Location: '/' });
+        res.writeHead(302, { 'Set-Cookie': `agentscope_session=${token}; HttpOnly; SameSite=Strict; Path=/`, Location: '/' });
         res.end(); return;
       }
       res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -1043,9 +1063,10 @@ const server = http.createServer((req, res) => {
   json(res, { error: 'Not found' }, 404);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
+  const shown = IS_LOOPBACK ? 'localhost' : HOST;
   console.log(`\n  agent-visibility\n`);
-  console.log(`  Dashboard  →  http://localhost:${PORT}`);
-  console.log(`  Tool POST  →  http://localhost:${PORT}/tool`);
+  console.log(`  Dashboard  →  http://${shown}:${PORT}`);
+  console.log(`  Tool POST  →  http://${shown}:${PORT}/tool`);
   console.log(`  Ctrl+C to stop\n`);
 });
