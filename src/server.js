@@ -1103,7 +1103,7 @@ const server = http.createServer((req, res) => {
 
   // ── Data API (licence-gated) ───────────────────────────────────────────────
   if (req.method === 'GET' && pathname === '/api/v1/metrics') {
-    if (!licence.valid) { json(res, { error: 'Licence required', upgrade: 'https://agentscope.dev/pricing' }, 402); return; }
+    if (!licence.valid) { json(res, { error: 'Licence required', upgrade: 'https://github.com/hit1001/multiagent-visibility-tool/blob/main/LICENSE' }, 402); return; }
     json(res, db ? db.getMetrics() : { error: 'Persistence disabled' }); return;
   }
 

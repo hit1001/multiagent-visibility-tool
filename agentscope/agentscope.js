@@ -59,7 +59,7 @@ function forward(tool, args) {
 async function handleMsg(msg, send) {
   const { id, method, params } = msg;
   if (method === 'initialize') {
-    send({ jsonrpc:'2.0', id, result: { protocolVersion:'2024-11-05', capabilities:{ tools:{} }, serverInfo:{ name:'agentscope', version:'1.0.0' } } });
+    send({ jsonrpc:'2.0', id, result: { protocolVersion:'2024-11-05', capabilities:{ tools:{} }, serverInfo:{ name:'agentscope', version: require('../package.json').version } } });
   } else if (method === 'tools/list') {
     send({ jsonrpc:'2.0', id, result: { tools: TOOLS } });
   } else if (method === 'tools/call') {

@@ -3,7 +3,8 @@
 > The missing DevTools for multi-agent AI systems.
 
 [![npm](https://img.shields.io/npm/v/agent-visibility?style=flat&color=blue)](https://www.npmjs.com/package/agent-visibility)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: MIT / Commercial](https://img.shields.io/badge/License-MIT%20%2F%20Commercial-green.svg)](LICENSE)
+[![CI](https://github.com/hit1001/multiagent-visibility-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/hit1001/multiagent-visibility-tool/actions/workflows/ci.yml)
 [![Stars](https://img.shields.io/github/stars/hit1001/multiagent-visibility-tool?style=flat)](https://github.com/hit1001/multiagent-visibility-tool/stargazers)
 
 ![MAVT Demo](demo.gif)
@@ -41,7 +42,9 @@ You open your terminal. You see... nothing useful.
 | 🛠 **Tool call traces** | Every tool invocation, input, output, and duration |
 | 🧩 **Memory panel** | Watch agent memory reads and writes as they happen |
 | 📜 **Run history & replay** | Browse past runs and replay them step by step |
-| 🔔 **Webhook alerts** | Get notified on token budget exceeded, agent stuck, critic failures |
+| 🔔 **Webhook alerts** | Get notified on token budget exceeded, agent stuck, critic failures, slow runs |
+| 🔌 **MCP bridge** | Any MCP-capable agent can report to the dashboard without code changes |
+| 🔒 **Local-first** | Runs on your machine and stores runs in local SQLite; traces never leave it unless you configure a webhook |
 
 ---
 
@@ -67,7 +70,40 @@ agentscope
 
 Open your browser → `http://localhost:4242`
 
-Your agents are now fully observable.
+Your agents are now fully observable. Click a demo scenario in the dashboard to see what a traced run looks like.
+
+### CLI options
+
+| Option | What it does |
+|---|---|
+| `--port <n>` | Dashboard port (default `4242`) |
+| `--mcp` | Also start the MCP bridge on `:4243` |
+| `--mcp-port <n>` | MCP bridge port |
+| `--no-open` | Don't open the browser |
+| `--host <addr>` | Listen address (default `127.0.0.1`; anything else needs `--password`) |
+| `--password <pwd>` | Password-protect the dashboard |
+| `--licence <key>` | Unlock the commercial data API |
+
+### MCP
+
+Start with `agentscope --mcp`, then add this to your agent's MCP config:
+
+```json
+{ "mcpServers": { "agentscope": { "url": "http://localhost:4243/sse" } } }
+```
+
+The agent gets tools such as `register_agent`, `set_goal`, `log_event`, `log_llm_turn`, `log_tool_call` and `finish_run`.
+
+### HTTP
+
+Anything that can send HTTP can report events:
+
+```bash
+curl -X POST localhost:4242/tool -H 'Content-Type: application/json' \
+  -d '{"tool":"set_goal","args":{"goal":"My task","run_id":"run-1"}}'
+```
+
+Saved runs can be downloaded from the dashboard or from `GET /export/run/<id>` and `GET /export/runs`.
 
 ---
 
@@ -120,7 +156,16 @@ Traces contain your prompts and model outputs, so the dashboard is locked down b
 - **Password mode.** `--password` protects the dashboard (session cookie, `HttpOnly`, `SameSite=Strict`); agents authenticate with API keys (`X-API-Key`). The `--mcp` bridge is authenticated automatically.
 - **MCP bridge** (`:4243`) accepts local connections only.
 
-Commercial licence keys (`--licence MAVT-TEAM-YYYYMM-<signature>`) are Ed25519-signed and verified offline.
+---
+
+## Licensing
+
+MAVT is dual-licensed (see [LICENSE](LICENSE)):
+
+- **Free (MIT):** individuals, teams under 10 people, open source, evaluation.
+- **Commercial licence:** organisations of 10+ people, or use in a revenue-generating product or hosted service. To get one, open an issue or email the author.
+
+Licence keys (`--licence MAVT-TEAM-YYYYMM-<signature>`) are Ed25519-signed and checked offline; nothing phones home.
 
 ---
 
@@ -130,11 +175,12 @@ Configure alerts directly from the dashboard sidebar:
 
 | Alert | Trigger |
 |---|---|
-| 💸 Token budget | Agent uses ≥ X% of its token budget |
-| ⏳ Agent stuck | Agent silent for more than N seconds |
+| 💸 Token budget | Agent uses ≥ X% of its token budget (only for agents registered with `token_budget`) |
+| ⏳ Agent stuck | A running agent is silent for more than N seconds |
 | ❌ Critic fail rate | Critic failure rate exceeds X% |
+| ⏱️ Slow run | A run takes much longer than recent runs |
 
-Alerts appear as toast notifications in the UI and are POSTed to any webhook URL you configure.
+Alerts appear as toast notifications in the UI and are POSTed to any webhook URL you configure; Slack and Discord webhooks get formatted messages. Settings are saved to `~/.agentscope/alerts.json`.
 
 ---
 
@@ -165,6 +211,9 @@ MAVT is the foundation layer your agent stack is missing.
 - [x] AutoGen adapter
 - [x] CrewAI adapter
 - [x] Webhook alerts
+- [x] MCP bridge
+- [x] Password protection, API keys and audit log
+- [x] Run export
 - [ ] OpenTelemetry export
 - [ ] Cloud-hosted dashboard
 - [ ] Cost tracking per agent
@@ -175,6 +224,20 @@ MAVT is the foundation layer your agent stack is missing.
 
 Issues, PRs, and framework integrations are very welcome.
 If you're using MAVT with a framework not listed above — open an issue and let's add it.
+
+To work on it locally (Node 22+):
+
+```bash
+git clone https://github.com/hit1001/multiagent-visibility-tool
+cd multiagent-visibility-tool
+npm install
+npm test                                   # server, database, licence and security tests
+pip install langchain-core requests
+python test/test_adapters.py               # Python adapters against a real server
+npm run dev                                # dashboard on :4242
+```
+
+CI runs both test suites on every pull request. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ---
 
