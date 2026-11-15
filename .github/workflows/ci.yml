@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  adapters:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: python -m py_compile adapters/*.py
+      - run: pip install langchain-core requests
+      - run: python test/test_adapters.py -v
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+      - name: Check the npm tarball contains no tests, scripts or keys
+        run: |
+          npm pack --dry-run --json > pack.json
+          # npm <=11 emits an array, npm 12 an object keyed by package name
+          if node -e "const f=Object.values(require('./pack.json'))[0].files.map(x=>x.path); process.exit(f.some(p=>/^(test|scripts)\/|\.pem$/.test(p))?0:1)"; then
+            echo "Unexpected files in package"; exit 1
+          fi

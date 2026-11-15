@@ -1,9 +1,9 @@
 """
-agentscope · AutoGen adapter
-==============================
-Two-line integration (pyautogen / autogen-agentchat):
+agent-visibility · AutoGen adapter
+==================================
+Copy mavt_client.py and mavt_autogen.py into your project, then (pyautogen / autogen-agentchat):
 
-    from agentscope.adapters.autogen import track
+    from mavt_autogen import track
     scope = track(agents=[orchestrator, researcher, coder], goal="My task")
 
     # … run your agents …
@@ -23,77 +23,47 @@ from __future__ import annotations
 
 import functools
 import time
-import threading
 from typing import Any, Dict, List, Optional
 
-import requests
+from mavt_client import VisibilityClient
 
 
 def track(
     agents: List[Any],
     goal: str = "",
     url: str = "http://localhost:4242",
+    api_key: Optional[str] = None,
 ) -> "_AgentscopeAutoGen":
     """
     Patch a list of AutoGen agents and start a visibility run.
 
     Returns a scope object; call scope.finish() when done.
     """
-    scope = _AgentscopeAutoGen(url=url, goal=goal)
+    scope = _AgentscopeAutoGen(url=url, goal=goal, api_key=api_key)
+    scope._start()  # start the run first so registered agents belong to it
     for agent in agents:
         scope._patch(agent)
-    scope._start()
     return scope
 
 
 class _AgentscopeAutoGen:
-    def __init__(self, url: str, goal: str):
-        self.url = url.rstrip("/")
+    def __init__(self, url: str, goal: str, api_key: Optional[str] = None):
+        self._client = VisibilityClient(url, api_key)
+        self._post = self._client.post
         self._goal = goal
         self._run_id = str(int(time.time() * 1000))
-        self._lock = threading.Lock()
-        self._registered: set[str] = set()
 
     # ── internal helpers ──────────────────────────────────────────────────────
-
-    def _post(self, tool: str, args: dict) -> None:
-        try:
-            requests.post(
-                f"{self.url}/tool",
-                json={"tool": tool, "args": args},
-                timeout=2,
-            )
-        except Exception:
-            pass
 
     def _start(self) -> None:
         self._post("set_goal", {"goal": self._goal or "AutoGen run", "run_id": self._run_id})
 
-    def _register(self, name: str, role: str) -> None:
-        with self._lock:
-            if name in self._registered:
-                return
-            self._registered.add(name)
-        self._post("register_agent", {"id": name, "label": name, "role": role})
-
-    def _infer_role(self, name: str) -> str:
-        n = name.lower()
-        if "orchestrat" in n or "manager" in n or "user_proxy" in n or "groupchat" in n:
-            return "orchestrator"
-        if "critic" in n or "review" in n:
-            return "critic"
-        if "research" in n:
-            return "researcher"
-        if "cod" in n or "engineer" in n or "developer" in n:
-            return "coder"
-        return "worker"
 
     # ── agent patching ────────────────────────────────────────────────────────
 
     def _patch(self, agent: Any) -> None:
         name = getattr(agent, "name", str(agent))
-        role = self._infer_role(name)
-        self._register(name, role)
+        self._client.register(name)
         scope = self
 
         # ── patch generate_reply (AutoGen 0.2 / 0.3) ─────────────────────────

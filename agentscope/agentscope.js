@@ -15,7 +15,10 @@
 const http = require('http');
 
 const MCP_PORT     = parseInt(process.env.VISIBILITY_MCP_PORT || '4243');
-const DASHBOARD    = `http://localhost:${process.env.VISIBILITY_PORT || '4242'}`;
+const DASH_HOST    = [undefined, '', '0.0.0.0', '::'].includes(process.env.VISIBILITY_HOST) ? '127.0.0.1' : process.env.VISIBILITY_HOST;
+const DASHBOARD    = `http://${DASH_HOST.includes(':') ? `[${DASH_HOST}]` : DASH_HOST}:${process.env.VISIBILITY_PORT || '4242'}`;
+const INTERNAL_TOKEN = process.env.VISIBILITY_INTERNAL_TOKEN || null; // lets the bridge through a password-protected dashboard
+const LOOPBACK     = new Set(['127.0.0.1', 'localhost', '::1']);
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 const TOOLS = [
@@ -24,6 +27,9 @@ const TOOLS = [
   { name: 'log_llm_turn',   description: 'Log a full LLM conversation turn (messages in + response out + optional thinking). Use this to expose the exact context sent to and received from the model.',
     inputSchema: { type:'object', required:['agent'], properties: { agent:{type:'string'}, model:{type:'string'}, prompt_tokens:{type:'number'}, completion_tokens:{type:'number'}, latency_ms:{type:'number'}, stop_reason:{type:'string'}, messages:{type:'array',items:{type:'object',properties:{role:{type:'string'},content:{type:'string'}}}}, response:{type:'string'}, thinking:{type:'string'} } } },
   { name: 'trace_step',     description: 'Draw an arrow between two agents on the canvas.',  inputSchema: { type:'object', required:['from_agent','to_agent'], properties: { from_agent:{type:'string'}, to_agent:{type:'string'}, label:{type:'string'}, arrow_type:{type:'string',enum:['msg','result','retry','tool']} } } },
+  { name: 'log_tool_call',  description: 'Log a tool invocation (input, output, latency, error) to the Tools tab.', inputSchema: { type:'object', required:['agent','tool_name'], properties: { agent:{type:'string'}, tool_name:{type:'string'}, input:{type:'string'}, output:{type:'string'}, latency_ms:{type:'number'}, error:{type:'string'} } } },
+  { name: 'log_embedding',  description: 'Log an embedding call to the Tools tab.',            inputSchema: { type:'object', required:['agent','text'], properties: { agent:{type:'string'}, text:{type:'string'}, model:{type:'string'}, dims:{type:'number'}, latency_ms:{type:'number'} } } },
+  { name: 'log_retrieval',  description: 'Log a retrieval/search and its top results to the Tools tab.', inputSchema: { type:'object', required:['agent','query'], properties: { agent:{type:'string'}, query:{type:'string'}, results:{type:'array',items:{type:'object',properties:{text:{type:'string'},score:{type:'number'}}}}, latency_ms:{type:'number'} } } },
   { name: 'set_memory',     description: 'Write a value to the shared memory panel.',        inputSchema: { type:'object', required:['key','value'], properties: { key:{type:'string'}, value:{type:'string'}, op:{type:'string',enum:['write','read']} } } },
   { name: 'set_agent_state',description: 'Update an agent status on the dashboard.',         inputSchema: { type:'object', required:['agent_id','status'], properties: { agent_id:{type:'string'}, status:{type:'string',enum:['idle','running','active','done','error']} } } },
   { name: 'set_goal',       description: 'Set the run goal and mark the run as started.',    inputSchema: { type:'object', required:['goal'], properties: { goal:{type:'string'}, run_id:{type:'string'} } } },
@@ -37,7 +43,8 @@ function forward(tool, args) {
     const body = JSON.stringify({ tool, args });
     const req = http.request(DASHBOARD + '/tool', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+                 ...(INTERNAL_TOKEN && { 'X-Internal-Token': INTERNAL_TOKEN }) },
     }, res => {
       let data = '';
       res.on('data', c => data += c);
@@ -52,7 +59,7 @@ function forward(tool, args) {
 async function handleMsg(msg, send) {
   const { id, method, params } = msg;
   if (method === 'initialize') {
-    send({ jsonrpc:'2.0', id, result: { protocolVersion:'2024-11-05', capabilities:{ tools:{} }, serverInfo:{ name:'agentscope', version:'1.0.0' } } });
+    send({ jsonrpc:'2.0', id, result: { protocolVersion:'2024-11-05', capabilities:{ tools:{} }, serverInfo:{ name:'agentscope', version: require('../package.json').version } } });
   } else if (method === 'tools/list') {
     send({ jsonrpc:'2.0', id, result: { tools: TOOLS } });
   } else if (method === 'tools/call') {
@@ -60,7 +67,7 @@ async function handleMsg(msg, send) {
     const found = TOOLS.find(t => t.name === name);
     if (!found) { send({ jsonrpc:'2.0', id, error:{ code:-32601, message:`Unknown tool: ${name}` } }); return; }
     const result = await forward(name, args || {});
-    send({ jsonrpc:'2.0', id, result:{ content:[{ type:'text', text:JSON.stringify(result) }], isError: result.ok === false } });
+    send({ jsonrpc:'2.0', id, result:{ content:[{ type:'text', text:JSON.stringify(result) }], isError: result.ok === false || !!result.error } });
   } else if (method === 'notifications/initialized') {
     // no response
   } else if (id !== undefined) {
@@ -70,10 +77,19 @@ async function handleMsg(msg, send) {
 
 // ── HTTP server (SSE transport) ────────────────────────────────────────────────
 const sessions = new Map();
-const CORS = { 'Access-Control-Allow-Origin':'*', 'Access-Control-Allow-Methods':'GET, POST, OPTIONS', 'Access-Control-Allow-Headers':'Content-Type, Accept' };
+const CORS = {};
 function readBody(req, cb) { let d=''; req.on('data', c=>d+=c); req.on('end', ()=>cb(d)); }
+const hostname = h => (h || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+// Only local clients: reject DNS-rebound Host headers and pages from non-local origins.
+function localRequest(req) {
+  if (!LOOPBACK.has(hostname(req.headers['host']))) return false;
+  const origin = req.headers['origin'];
+  if (!origin) return true;
+  try { return LOOPBACK.has(hostname(new URL(origin).host)); } catch { return false; }
+}
 
 http.createServer((req, res) => {
+  if (!localRequest(req)) { res.writeHead(403, { 'Content-Type':'application/json' }); res.end('{"error":"Forbidden"}'); return; }
   if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
 
   if (req.method === 'GET' && req.url === '/sse') {
@@ -106,7 +122,7 @@ http.createServer((req, res) => {
   }
 
   res.writeHead(404, { ...CORS, 'Content-Type':'application/json' }); res.end('{"error":"Not found"}');
-}).listen(MCP_PORT, () => {
+}).listen(MCP_PORT, '127.0.0.1', () => {
   console.log(`\n  agentscope — MCP bridge\n`);
   console.log(`  SSE:       http://localhost:${MCP_PORT}/sse`);
   console.log(`  Dashboard: ${DASHBOARD}\n`);
