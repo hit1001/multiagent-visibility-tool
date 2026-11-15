@@ -7,22 +7,61 @@ const path   = require('path');
 const crypto = require('crypto');
 
 const PORT = parseInt(process.env.VISIBILITY_PORT || '4242');
+const HOST = process.env.VISIBILITY_HOST || '127.0.0.1';
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const IS_LOOPBACK = LOOPBACK_HOSTS.has(HOST);
 
 // ── Auth ───────────────────────────────────────────────────────────────────────
 const PASSWORD = process.env.VISIBILITY_PASSWORD || null;
+const INTERNAL_TOKEN = process.env.VISIBILITY_INTERNAL_TOKEN || null; // set by the CLI for the MCP bridge
 const sessions = new Set(); // in-memory session tokens (single-user)
 const rateLimiters = new Map(); // keyId → { count, resetAt }
+
+// Exposing the dashboard beyond this machine without a password would publish every trace.
+if (!IS_LOOPBACK && !PASSWORD) {
+  console.error(`[agentscope] Refusing to listen on ${HOST} without a password. Set --password (VISIBILITY_PASSWORD) or use the default 127.0.0.1.`);
+  process.exit(1);
+}
 
 function hashKey(raw) {
   return crypto.createHash('sha256').update(raw).digest('hex');
 }
+function safeEqual(a, b) {
+  // Compare digests so neither length nor content leaks through timing.
+  return crypto.timingSafeEqual(crypto.createHash('sha256').update(String(a)).digest(),
+                                crypto.createHash('sha256').update(String(b)).digest());
+}
 function parseCookies(str = '') {
-  return Object.fromEntries(str.split(';').map(p => p.trim().split('=').map(decodeURIComponent)));
+  const out = {};
+  for (const part of str.split(';')) {
+    const i = part.indexOf('=');
+    if (i < 0) continue;
+    try { out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } catch (_) {} // skip malformed %-escapes
+  }
+  return out;
 }
 function genToken() { return crypto.randomBytes(32).toString('hex'); }
 
+// ── Request origin checks ──────────────────────────────────────────────────────
+// Block DNS-rebinding: on loopback, only accept requests addressed to a loopback name.
+function hostAllowed(req) {
+  if (!IS_LOOPBACK) return true;
+  const host = (req.headers['host'] || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+  return LOOPBACK_HOSTS.has(host);
+}
+// Block cross-site requests: browsers send Origin on cross-origin POST/DELETE, so it must match Host.
+function originAllowed(req) {
+  const origin = req.headers['origin'];
+  if (!origin) return true; // non-browser clients (adapters, MCP bridge, curl)
+  if (process.env.VISIBILITY_CORS_ORIGIN && origin === process.env.VISIBILITY_CORS_ORIGIN) return true;
+  try { return new URL(origin).host === req.headers['host']; } catch { return false; }
+}
+
 function checkAuth(req) {
   if (!PASSWORD) return { ok: true, keyId: null };
+  if (INTERNAL_TOKEN && req.headers['x-internal-token'] && safeEqual(req.headers['x-internal-token'], INTERNAL_TOKEN)) {
+    return { ok: true, keyId: 'mcp-bridge' };
+  }
   // Session cookie
   const cookies = parseCookies(req.headers['cookie'] || '');
   if (cookies.agentscope_session && sessions.has(cookies.agentscope_session)) return { ok: true, keyId: null };
@@ -46,27 +85,8 @@ function checkAuth(req) {
 }
 
 // ── Licence ────────────────────────────────────────────────────────────────────
-const LICENCE_SECRET = 'mavt-licence-v1';
-const LICENCE_KEY    = process.env.VISIBILITY_LICENCE || null;
-
-function validateLicence(key) {
-  if (!key) return { valid: false };
-  try {
-    const parts = key.split('-'); // MAVT-TIER-YYYYMM-HMAC8
-    if (parts.length < 4 || parts[0] !== 'MAVT') return { valid: false };
-    const tier   = parts[1];          // TEAM | ENT
-    const expiry = parts[2];          // e.g. 202612
-    const hmac8  = parts[3];
-    const expected = crypto.createHmac('sha256', LICENCE_SECRET)
-      .update(tier + expiry).digest('hex').slice(0, 8);
-    if (hmac8 !== expected) return { valid: false };
-    const year = parseInt(expiry.slice(0, 4)), month = parseInt(expiry.slice(4, 6));
-    const expires = new Date(year, month - 1, 1); // first of expiry month
-    if (Date.now() > expires.getTime()) return { valid: false, reason: 'expired' };
-    return { valid: true, tier: tier.toLowerCase(), expires };
-  } catch { return { valid: false }; }
-}
-const licence = validateLicence(LICENCE_KEY);
+const { validateLicence } = require('./licence');
+const licence = validateLicence(process.env.VISIBILITY_LICENCE || null);
 
 // ── Login HTML ─────────────────────────────────────────────────────────────────
 const LOGIN_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>agent-visibility — login</title>
@@ -97,8 +117,10 @@ function fresh() {
     goal: '', runId: null, status: 'idle', startedAt: null,
     clients: [],
     eventSeq: 0,
+    pendingAgents: new Set(), // registered between runs; carried into the next run
   };
 }
+const runOver = () => !state.runId || state.status === 'done' || state.status === 'error';
 
 function persist(tool, args) {
   if (suppressPersist || !db || !state.runId) return;
@@ -107,23 +129,38 @@ function persist(tool, args) {
 }
 
 // ── Alert engine ───────────────────────────────────────────────────────────────
+const ALERT_CONFIG_FILE = path.join(require('os').homedir(), '.agentscope', 'alerts.json');
 const alertConfig = {
   webhookUrl:       null,
   tokenBudgetPct:   90,    // fire when agent tokens >= N% of budget
   stuckAgentSec:    120,   // fire when running agent has no activity for N seconds
   criticFailRatePct: 50,   // fire when critic fail rate >= N% (min 3 events)
 };
-const alertState = {
-  fired:        new Set(),   // dedup keys already sent this run
-  lastActivity: {},          // agentId → last-active timestamp
-  critic:       { total: 0, fails: 0 },
-};
-function resetAlertState() {
-  alertState.fired.clear();
-  alertState.lastActivity = {};
-  alertState.critic = { total: 0, fails: 0 };
+function applyAlertConfig(c) {
+  const num = (v, lo, hi, cur) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : cur; };
+  if ('webhookUrl'        in c) alertConfig.webhookUrl        = c.webhookUrl || null;
+  if ('tokenBudgetPct'    in c) alertConfig.tokenBudgetPct    = num(c.tokenBudgetPct, 1, 100, alertConfig.tokenBudgetPct);
+  if ('stuckAgentSec'     in c) alertConfig.stuckAgentSec     = num(c.stuckAgentSec, 10, Infinity, alertConfig.stuckAgentSec);
+  if ('criticFailRatePct' in c) alertConfig.criticFailRatePct = num(c.criticFailRatePct, 1, 100, alertConfig.criticFailRatePct);
 }
+try { applyAlertConfig(JSON.parse(fs.readFileSync(ALERT_CONFIG_FILE, 'utf8'))); } catch (_) {} // no saved config yet
+function saveAlertConfig() {
+  try {
+    fs.mkdirSync(path.dirname(ALERT_CONFIG_FILE), { recursive: true });
+    fs.writeFileSync(ALERT_CONFIG_FILE, JSON.stringify(alertConfig, null, 2), { mode: 0o600 });
+  } catch (e) { console.warn('[agentscope] Could not save alert config:', e.message); }
+}
+function freshAlertState() {
+  return {
+    fired:        new Set(),   // dedup keys already sent this run
+    lastActivity: {},          // agentId → last-active timestamp
+    critic:       { total: 0, fails: 0 },
+  };
+}
+let alertState = freshAlertState();
+function resetAlertState() { alertState = freshAlertState(); }
 function fireAlert(type, data) {
+  if (suppressPersist) return; // never alert while replaying a stored run
   const payload = { alert: type, runId: state.runId, goal: state.goal, ...data, ts: Date.now() };
   broadcast('alert', payload);
   if (db) try { db.appendAlert(type, data.detail || JSON.stringify(data), state.runId); } catch (_) {}
@@ -159,7 +196,7 @@ function checkTokenBudget(agentId) {
   const budget = ag.token_budget || state.registry[agentId]?.token_budget || 0;
   if (!budget) return;
   const pct = (ag.tokens / budget) * 100;
-  const key = `${agentId}:budget:${Math.floor(ag.tokens / 100) * 100}`;
+  const key = `${agentId}:budget`;
   if (pct >= alertConfig.tokenBudgetPct && !alertState.fired.has(key)) {
     alertState.fired.add(key);
     fireAlert('token_budget_exceeded', { agent: agentId, tokens: ag.tokens, budget, pct: +pct.toFixed(1) });
@@ -182,7 +219,7 @@ function checkCriticFails(agentId, event_type) {
 }
 // Check for stuck agents every 15 s
 setInterval(() => {
-  if (!state.runId) return;
+  if (!state.runId || state.status !== 'running') return;
   const now     = Date.now();
   const threshMs = alertConfig.stuckAgentSec * 1000;
   Object.entries(alertState.lastActivity).forEach(([id, ts]) => {
@@ -217,24 +254,15 @@ function ensureAgent(id) {
     const r = state.registry[id] || {};
     state.agents[id] = {
       id, label: r.label || id, role: r.role || 'worker', model: r.model || '',
-      reports_to: r.reports_to || null, token_budget: r.token_budget || 8192,
+      reports_to: r.reports_to || null, token_budget: r.token_budget || null,
       color: r.color || COLORS[r.role] || '#6b7280', status: 'idle', tokens: 0, calls: 0,
     };
   }
 }
-function safeAgents() {
-  const out = {};
-  for (const [k, v] of Object.entries(state.agents)) {
-    out[k] = { id: v.id, label: v.label, role: v.role, model: v.model,
-      reports_to: v.reports_to, token_budget: v.token_budget, color: v.color,
-      status: v.status, tokens: v.tokens, calls: v.calls };
-  }
-  return out;
-}
 function snapshot() {
   return {
     registry: state.registry, runId: state.runId, goal: state.goal,
-    status: state.status, startedAt: state.startedAt, agents: safeAgents(),
+    status: state.status, startedAt: state.startedAt, agents: state.agents,
     memory: state.memory, events: state.events.slice(0, 80),
     arrows: state.arrows.slice(0, 20), plan: state.plan, metrics: state.metrics,
     internals: state.internals.slice(0, 60),
@@ -245,14 +273,15 @@ function snapshot() {
 // ── Tools ─────────────────────────────────────────────────────────────────────
 const TOOLS = {
   register_agent(a) {
-    persist('register_agent', a);
-    const { id, label, role = 'worker', model = '', reports_to = null, token_budget = 8192, color = null } = a;
+    if (!runOver()) persist('register_agent', a);
+    const { id, label, role = 'worker', model = '', reports_to = null, token_budget = null, color = null } = a;
     const c = color || COLORS[role] || '#6b7280';
     state.registry[id] = { id, label, role, model, reports_to, token_budget, color: c };
     state.agents[id]   = { ...state.registry[id], status: 'idle', tokens: 0, calls: 0 };
-    if (db) try { db.appendRunAgent(state.runId, id); } catch (_) {}
+    if (runOver()) state.pendingAgents.add(id); // saved when the next run starts
+    else if (db && !suppressPersist) try { db.appendRunAgent(state.runId, id); } catch (_) {}
     broadcast('registry', state.registry);
-    broadcast('agents', safeAgents());
+    broadcast('agents', state.agents);
     broadcast('event', { agent: id, event_type: 'registered',
       message: `${label} registered — role:${role}, model:${model || 'unset'}`,
       tokens: 0, latency_ms: 0, ts: Date.now() });
@@ -261,6 +290,7 @@ const TOOLS = {
   log_event(a) {
     persist('log_event', a);
     const { agent, event_type, message, tokens = 0, latency_ms = 0, metadata = {} } = a;
+    if (event_type === 'retry') state.metrics.retries++;
     ensureAgent(agent);
     const item = { agent, event_type, message, tokens, latency_ms, metadata, ts: Date.now() };
     state.events.unshift(item);
@@ -275,7 +305,7 @@ const TOOLS = {
     checkCriticFails(agent, event_type);
     broadcast('event', item);
     broadcast('metrics', state.metrics);
-    broadcast('agents', safeAgents());
+    broadcast('agents', state.agents);
     return { ok: true };
   },
   set_memory(a) {
@@ -291,7 +321,7 @@ const TOOLS = {
     ensureAgent(agent_id);
     state.agents[agent_id].status = status;
     alertState.lastActivity[agent_id] = Date.now();
-    broadcast('agents', safeAgents());
+    broadcast('agents', state.agents);
     return { ok: true };
   },
   trace_step(a) {
@@ -313,13 +343,33 @@ const TOOLS = {
   },
   set_goal(a) {
     const { goal, run_id } = a;
+    const newRun = runOver() || (run_id && run_id !== state.runId);
+    let carried = [];
+    if (newRun) {
+      // Start clean so counters and events never mix across runs; keep agents registered since the last run.
+      carried = [...state.pendingAgents].filter(id => state.registry[id]).map(id => state.registry[id]);
+      const clients = state.clients;
+      const presetRunId = state.status === 'idle' ? state.runId : null; // runScenario pre-sets one
+      state = fresh(); state.clients = clients;
+      state.runId = presetRunId;
+      for (const r of carried) {
+        state.registry[r.id] = r;
+        state.agents[r.id] = { ...r, status: 'idle', tokens: 0, calls: 0 };
+      }
+      broadcast('reset', {});
+    }
     state.goal = goal;
     // preserve pre-set runId (from runScenario) unless caller passes one explicitly
     state.runId = run_id || state.runId || String(Date.now());
     state.status = 'running'; state.startedAt = Date.now();
     resetAlertState();
-    if (db) try { db.startRun(state.runId, goal, state.startedAt); } catch (_) {}
+    if (db && !suppressPersist) try { db.startRun(state.runId, goal, state.startedAt); } catch (_) {}
     persist('set_goal', a); // after runId is set
+    for (const r of carried) {
+      persist('register_agent', r);
+      if (db && !suppressPersist) try { db.appendRunAgent(state.runId, r.id); } catch (_) {}
+    }
+    if (carried.length) { broadcast('registry', state.registry); broadcast('agents', state.agents); }
     broadcast('goal', { goal, runId: state.runId });
     broadcast('status', 'running');
     return { ok: true };
@@ -328,11 +378,11 @@ const TOOLS = {
     const { status = 'done' } = a;
     state.status = status;
     const finishedAt = Date.now();
-    if (db) try { db.finishRun(state.runId, status, finishedAt, { steps: state.metrics.steps, tokens: state.metrics.tokens }); } catch (_) {}
+    if (db && !suppressPersist) try { db.finishRun(state.runId, status, finishedAt, { steps: state.metrics.steps, tokens: state.metrics.tokens }); } catch (_) {}
     persist('finish_run', a);
     broadcast('status', status);
     // Check for run duration outlier
-    if (status === 'done' && state.startedAt && db) {
+    if (status === 'done' && state.startedAt && db && !suppressPersist) {
       try {
         const dur  = finishedAt - state.startedAt;
         const past = db.getLastRunDurations(10);
@@ -419,7 +469,7 @@ const TOOLS = {
     alertState.lastActivity[agent] = Date.now();
     if (total) checkTokenBudget(agent);
     broadcast('internal', item);
-    broadcast('agents', safeAgents());
+    broadcast('agents', state.agents);
     broadcast('metrics', state.metrics);
     return { ok: true };
   },
@@ -432,8 +482,9 @@ function computeStateAt(runId, targetSeq) {
   if (!db) return null;
   const events = db.getRunEvents(runId);
   const slice = (targetSeq != null) ? events.slice(0, targetSeq) : events;
-  const savedState = state;
+  const savedState = state, savedAlerts = alertState;
   state = fresh();
+  alertState = freshAlertState(); // replay must not touch the live run's alert tracking
   suppressBroadcast = true;
   suppressPersist   = true;
   slice.forEach(ev => {
@@ -447,6 +498,7 @@ function computeStateAt(runId, targetSeq) {
   suppressBroadcast = false;
   suppressPersist   = false;
   state = savedState;
+  alertState = savedAlerts;
   return snap;
 }
 
@@ -637,7 +689,6 @@ const SCENARIOS = {
         TOOLS.set_memory({ key: 'critique', value: 'fail 4/10 — missing TLDs, quoted strings, IP literals' });
         TOOLS.trace_step({ from_agent: 'critic', to_agent: 'orchestrator', label: 'fail 4/10', arrow_type: 'result' });
         TOOLS.set_agent_state({ agent_id: 'critic', status: 'active' });
-        state.metrics.retries++; broadcast('metrics', state.metrics);
       }},
       // Orchestrator retries coder
       { delay: 500, fn: () => {
@@ -817,11 +868,30 @@ const HTML = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8');
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 const CORS = {
-  'Access-Control-Allow-Origin':  '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
+  // The dashboard is served same-origin; other browser origins must be allowed explicitly.
+  ...(process.env.VISIBILITY_CORS_ORIGIN && {
+    'Access-Control-Allow-Origin':  process.env.VISIBILITY_CORS_ORIGIN,
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-API-Key',
+    'Vary': 'Origin',
+  }),
 };
-function body(req, cb) { let d = ''; req.on('data', c => d += c); req.on('end', () => cb(d)); }
+const MAX_BODY = 5 * 1024 * 1024;
+function body(req, res, cb) {
+  let d = '', size = 0, aborted = false;
+  req.on('data', c => {
+    if (aborted) return; // keep draining, ignore the rest
+    size += c.length;
+    if (size > MAX_BODY) {
+      aborted = true;
+      res.writeHead(413, { ...CORS, 'Content-Type': 'application/json', 'Connection': 'close' });
+      res.end(JSON.stringify({ error: 'Request body too large' }));
+      return;
+    }
+    d += c;
+  });
+  req.on('end', () => { if (!aborted) cb(d); });
+}
 function json(res, data, status = 200) {
   res.writeHead(status, { ...CORS, 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
@@ -829,6 +899,8 @@ function json(res, data, status = 200) {
 
 // ── HTTP server ────────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
+  if (!hostAllowed(req))   { json(res, { error: 'Invalid Host header' }, 421); return; }
+  if (!originAllowed(req)) { json(res, { error: 'Cross-origin request blocked' }, 403); return; }
   if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
 
   const u2       = new URL(req.url, `http://localhost`);
@@ -841,17 +913,19 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === 'POST' && pathname === '/auth/login') {
-    body(req, data => {
+    body(req, res, data => {
       const params = new URLSearchParams(data);
       const pwd    = params.get('password') || '';
-      if (PASSWORD && pwd === PASSWORD) {
+      if (PASSWORD && safeEqual(pwd, PASSWORD)) {
         const token = genToken();
         sessions.add(token);
-        res.writeHead(302, { 'Set-Cookie': `agentscope_session=${token}; HttpOnly; Path=/`, Location: '/' });
+        res.writeHead(302, { 'Set-Cookie': `agentscope_session=${token}; HttpOnly; SameSite=Strict; Path=/`, Location: '/' });
         res.end(); return;
       }
-      res.writeHead(200, { 'Content-Type': 'text/html' });
-      res.end(LOGIN_HTML.replace('__ERR__', 'Incorrect password'));
+      setTimeout(() => { // slow down password guessing
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end(LOGIN_HTML.replace('__ERR__', 'Incorrect password'));
+      }, 1000);
     }); return;
   }
   if (req.method === 'POST' && pathname === '/auth/logout') {
@@ -895,7 +969,7 @@ const server = http.createServer((req, res) => {
 
   // Tool call
   if (req.method === 'POST' && pathname === '/tool') {
-    body(req, data => {
+    body(req, res, data => {
       try {
         const { tool, args } = JSON.parse(data);
         const fn = TOOLS[tool];
@@ -907,8 +981,9 @@ const server = http.createServer((req, res) => {
 
   // Run a demo scenario
   if (req.method === 'POST' && pathname === '/emulate') {
-    body(req, data => {
-      const { scenario } = JSON.parse(data || '{}');
+    body(req, res, data => {
+      let scenario;
+      try { ({ scenario } = JSON.parse(data || '{}')); } catch (e) { json(res, { error: e.message }, 400); return; }
       const ok = runScenario(scenario || 'research_code');
       json(res, { ok, scenario }, ok ? 200 : 400);
     }); return;
@@ -932,7 +1007,7 @@ const server = http.createServer((req, res) => {
   // GET /runs/:id/state[?seq=N] — replay snapshot at event N
   if (req.method === 'GET' && /^\/runs\/[^/]+\/state$/.test(pathname)) {
     const runId = pathname.slice(6, -6);
-    const seq = parseInt(u2.searchParams.get('seq') || '0') || 0;
+    const seq = u2.searchParams.has('seq') ? (parseInt(u2.searchParams.get('seq')) || 0) : null; // no seq → whole run
     const snap = computeStateAt(runId, seq);
     if (!snap) { json(res, { error: 'Persistence disabled or run not found' }, 404); return; }
     json(res, snap); return;
@@ -960,13 +1035,10 @@ const server = http.createServer((req, res) => {
 
   // POST /alerts/config — update alert thresholds / webhook
   if (req.method === 'POST' && pathname === '/alerts/config') {
-    body(req, data => {
+    body(req, res, data => {
       try {
-        const c = JSON.parse(data || '{}');
-        if ('webhookUrl'        in c) alertConfig.webhookUrl        = c.webhookUrl || null;
-        if ('tokenBudgetPct'    in c) alertConfig.tokenBudgetPct    = Math.max(1,  Math.min(100, Number(c.tokenBudgetPct)));
-        if ('stuckAgentSec'     in c) alertConfig.stuckAgentSec     = Math.max(10, Number(c.stuckAgentSec));
-        if ('criticFailRatePct' in c) alertConfig.criticFailRatePct = Math.max(1,  Math.min(100, Number(c.criticFailRatePct)));
+        applyAlertConfig(JSON.parse(data || '{}'));
+        saveAlertConfig();
         json(res, alertConfig);
       } catch (e) { json(res, { error: e.message }, 400); }
     }); return;
@@ -983,14 +1055,14 @@ const server = http.createServer((req, res) => {
     json(res, db ? db.listApiKeys() : []); return;
   }
   if (req.method === 'POST' && pathname === '/keys') {
-    body(req, data => {
+    body(req, res, data => {
       try {
         if (!db) { json(res, { error: 'Persistence disabled' }, 503); return; }
-        const { label = '', rateLimit = 60, tokenBudget = null } = JSON.parse(data || '{}');
+        const { label = '', rateLimit = 60 } = JSON.parse(data || '{}');
         const raw = 'mavt_sk_' + crypto.randomBytes(16).toString('hex');
         const id  = crypto.randomBytes(4).toString('hex');
-        db.createApiKey(id, label, hashKey(raw), rateLimit, tokenBudget);
-        json(res, { id, label, key: raw, rateLimit, tokenBudget, note: 'Save this key — it will not be shown again' });
+        db.createApiKey(id, label, hashKey(raw), rateLimit);
+        json(res, { id, label, key: raw, rateLimit, note: 'Save this key — it will not be shown again' });
       } catch (e) { json(res, { error: e.message }, 400); }
     }); return;
   }
@@ -1031,7 +1103,7 @@ const server = http.createServer((req, res) => {
 
   // ── Data API (licence-gated) ───────────────────────────────────────────────
   if (req.method === 'GET' && pathname === '/api/v1/metrics') {
-    if (!licence.valid) { json(res, { error: 'Licence required', upgrade: 'https://agentscope.dev/pricing' }, 402); return; }
+    if (!licence.valid) { json(res, { error: 'Licence required', upgrade: 'https://github.com/hit1001/multiagent-visibility-tool/blob/main/LICENSE' }, 402); return; }
     json(res, db ? db.getMetrics() : { error: 'Persistence disabled' }); return;
   }
 
@@ -1043,9 +1115,10 @@ const server = http.createServer((req, res) => {
   json(res, { error: 'Not found' }, 404);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
+  const shown = IS_LOOPBACK ? 'localhost' : HOST;
   console.log(`\n  agent-visibility\n`);
-  console.log(`  Dashboard  →  http://localhost:${PORT}`);
-  console.log(`  Tool POST  →  http://localhost:${PORT}/tool`);
+  console.log(`  Dashboard  →  http://${shown}:${PORT}`);
+  console.log(`  Tool POST  →  http://${shown}:${PORT}/tool`);
   console.log(`  Ctrl+C to stop\n`);
 });

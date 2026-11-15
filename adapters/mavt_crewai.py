@@ -1,9 +1,9 @@
 """
-agentscope · CrewAI adapter
-=============================
-Two-line integration:
+agent-visibility · CrewAI adapter
+=================================
+Copy mavt_client.py and mavt_crewai.py into your project, then:
 
-    from agentscope.adapters.crewai import AgentscopeListener
+    from mavt_crewai import AgentscopeListener
     listener = AgentscopeListener(goal="My task")
 
     crew = Crew(
@@ -26,7 +26,7 @@ import time
 import threading
 from typing import Any, List, Optional
 
-import requests
+from mavt_client import VisibilityClient
 
 
 class AgentscopeListener:
@@ -37,49 +37,21 @@ class AgentscopeListener:
     and memory writes to the agentscope dashboard in real time.
     """
 
-    def __init__(self, url: str = "http://localhost:4242", goal: str = ""):
-        self.url = url.rstrip("/")
+    def __init__(self, url: str = "http://localhost:4242", goal: str = "", api_key: Optional[str] = None):
+        self._client = VisibilityClient(url, api_key)
+        self._post = self._client.post
         self._goal = goal
         self._run_id = str(int(time.time() * 1000))
         self._lock = threading.Lock()
-        self._registered: set[str] = set()
         self._started = False
 
     # ── internal helpers ──────────────────────────────────────────────────────
 
-    def _post(self, tool: str, args: dict) -> None:
-        try:
-            requests.post(
-                f"{self.url}/tool",
-                json={"tool": tool, "args": args},
-                timeout=2,
-            )
-        except Exception:
-            pass
-
     def _agent_name(self, agent: Any) -> str:
         return str(getattr(agent, "role", None) or getattr(agent, "name", None) or str(agent))
 
-    def _agent_role(self, name: str) -> str:
-        n = name.lower()
-        if "orchestrat" in n or "manager" in n or "lead" in n:
-            return "orchestrator"
-        if "critic" in n or "review" in n or "quality" in n:
-            return "critic"
-        if "research" in n or "analys" in n:
-            return "researcher"
-        if "cod" in n or "engineer" in n or "developer" in n or "implement" in n:
-            return "coder"
-        return "worker"
-
     def _ensure(self, name: str) -> None:
-        with self._lock:
-            if name in self._registered:
-                return
-            self._registered.add(name)
-        self._post("register_agent", {
-            "id": name, "label": name, "role": self._agent_role(name),
-        })
+        self._client.register(name)
 
     def _ensure_started(self) -> None:
         with self._lock:
@@ -105,7 +77,7 @@ class AgentscopeListener:
             name = self._agent_name(agent_obj)
         else:
             # Older versions pass the raw output string
-            name = next(iter(self._registered), "agent")
+            name = self._client.first_agent or "agent"
 
         self._ensure(name)
         self._post("set_agent_state", {"agent_id": name, "status": "running"})
@@ -166,7 +138,7 @@ class AgentscopeListener:
         """
         try:
             agent_obj = getattr(task_output, "agent", None)
-            name = self._agent_name(agent_obj) if agent_obj else next(iter(self._registered), "agent")
+            name = self._agent_name(agent_obj) if agent_obj else (self._client.first_agent or "agent")
             self._ensure(name)
             result = str(
                 getattr(task_output, "raw", None)

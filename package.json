@@ -1,6 +1,6 @@
 {
   "name": "agent-visibility",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Real-time debug dashboard for multi-agent AI systems — topology graph, LLM turn inspector, tool call traces, memory panel, run history, replay, and webhook alerts",
   "main": "src/server.js",
   "bin": {
@@ -16,10 +16,8 @@
   "scripts": {
     "start": "node bin/visibility.js",
     "start:mcp": "node bin/visibility.js --mcp",
-    "dev": "node bin/visibility.js --no-open"
-  },
-  "dependencies": {
-    "better-sqlite3": "^13.2.0"
+    "dev": "node bin/visibility.js --no-open",
+    "test": "node --test \"test/*.test.js\""
   },
   "keywords": [
     "agent",
@@ -44,5 +42,8 @@
   },
   "allowScripts": {
     "better-sqlite3@13.2.0": true
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^13.2.0"
   }
 }

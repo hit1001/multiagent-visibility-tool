@@ -8,22 +8,25 @@
  *   visibility --port 5000            custom dashboard port
  *   visibility --mcp-port 5001        custom MCP port
  *   visibility --no-open              don't auto-open browser
+ *   visibility --host 0.0.0.0         listen on all interfaces (requires --password)
  *   visibility --password mypassword  password-protect the dashboard
- *   visibility --licence MAVT-TEAM-202612-xxxx  unlock data API
+ *   visibility --licence MAVT-TEAM-202612-<sig>  unlock data API
  *   visibility --help
  */
 'use strict';
-const path = require('path');
+const path   = require('path');
+const crypto = require('crypto');
 const { execSync, spawn } = require('child_process');
 
 const argv  = process.argv.slice(2);
-const flags = { mcp:false, noOpen:false, help:false, port:4242, mcpPort:4243, password:null, licence:null };
+const flags = { mcp:false, noOpen:false, help:false, port:4242, mcpPort:4243, password:null, licence:null, host:null };
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--mcp')                      flags.mcp      = true;
   if (argv[i] === '--no-open')                  flags.noOpen   = true;
   if (argv[i] === '--help' || argv[i] === '-h') flags.help     = true;
   if (argv[i] === '--port'     && argv[i+1])    flags.port     = parseInt(argv[++i]);
   if (argv[i] === '--mcp-port' && argv[i+1])    flags.mcpPort  = parseInt(argv[++i]);
+  if (argv[i] === '--host'     && argv[i+1])    flags.host     = argv[++i];
   if (argv[i] === '--password' && argv[i+1])    flags.password = argv[++i];
   if (argv[i] === '--licence'  && argv[i+1])    flags.licence  = argv[++i];
 }
@@ -38,8 +41,9 @@ if (flags.help) {
     visibility --port 5000              custom dashboard port
     visibility --mcp-port 5001          custom MCP port
     visibility --no-open                suppress auto browser open
+    visibility --host <addr>            bind address (default 127.0.0.1; non-local needs --password)
     visibility --password <pwd>         password-protect the dashboard
-    visibility --licence <key>          unlock data API (MAVT-TEAM-yyyymm-xxxx)
+    visibility --licence <key>          unlock data API (MAVT-TEAM-yyyymm-<signature>)
     visibility --help
 
   MCP config (after running with --mcp):
@@ -52,6 +56,8 @@ const env = {
   ...process.env,
   VISIBILITY_PORT:     String(flags.port),
   VISIBILITY_MCP_PORT: String(flags.mcpPort),
+  VISIBILITY_INTERNAL_TOKEN: crypto.randomBytes(32).toString('hex'),
+  ...(flags.host     && { VISIBILITY_HOST:     flags.host     }),
   ...(flags.password && { VISIBILITY_PASSWORD: flags.password }),
   ...(flags.licence  && { VISIBILITY_LICENCE:  flags.licence  }),
 };
@@ -60,7 +66,7 @@ const children = [];
 function spawn_(script) {
   const child = spawn(process.execPath, [script], { stdio:'inherit', env });
   children.push(child);
-  child.on('exit', code => { if (code) process.exit(code); });
+  child.on('exit', code => { if (code) { shutdown(); process.exit(code); } }); // don't orphan the other child
 }
 
 function shutdown() { children.forEach(c => { try { c.kill('SIGTERM'); } catch (_) {} }); }
@@ -75,7 +81,8 @@ if (flags.mcp) {
 
 if (!flags.noOpen) {
   setTimeout(() => {
-    const url = `http://localhost:${flags.port}`;
+    const host = !flags.host || ['0.0.0.0', '::'].includes(flags.host) ? 'localhost' : flags.host;
+    const url = `http://${host}:${flags.port}`;
     const cmd = process.platform === 'win32' ? `start "" "${url}"` : process.platform === 'darwin' ? `open "${url}"` : `xdg-open "${url}"`;
     try { execSync(cmd, { stdio:'ignore' }); } catch (_) {}
   }, 900);

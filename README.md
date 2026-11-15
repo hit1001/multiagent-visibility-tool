@@ -27,9 +27,10 @@
 
 ---
 
-<p align="center">
-  <img src="./demo.gif" alt="MAVT real-time dashboard demonstration" />
-</p>
+[![npm](https://img.shields.io/npm/v/agent-visibility?style=flat&color=blue)](https://www.npmjs.com/package/agent-visibility)
+[![License: MIT / Commercial](https://img.shields.io/badge/License-MIT%20%2F%20Commercial-green.svg)](LICENSE)
+[![CI](https://github.com/hit1001/multiagent-visibility-tool/actions/workflows/ci.yml/badge.svg)](https://github.com/hit1001/multiagent-visibility-tool/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/hit1001/multiagent-visibility-tool?style=flat)](https://github.com/hit1001/multiagent-visibility-tool/stargazers)
 
 > **You wouldn't ship a backend without logs. Why ship your agents blind?**
 
@@ -66,7 +67,17 @@ Your multi-agent workflow produces an unexpected result. You need to know:
 - **Node.js 22 or newer**, as specified by the package's `engines` field.
 - **npm** (npm 11+ recommended; npm 12 may require explicit approval of dependency install scripts).
 
-### 1. Install MAVT
+| | |
+|---|---|
+| 🔁 **Agent-to-agent traces** | See every message passed between agents, in order |
+| 🧠 **LLM turn inspector** | Full prompt/response history with token counts and latency |
+| 📊 **Live topology graph** | Visual execution graph, updating in real time |
+| 🛠 **Tool call traces** | Every tool invocation, input, output, and duration |
+| 🧩 **Memory panel** | Watch agent memory reads and writes as they happen |
+| 📜 **Run history & replay** | Browse past runs and replay them step by step |
+| 🔔 **Webhook alerts** | Get notified on token budget exceeded, agent stuck, critic failures, slow runs |
+| 🔌 **MCP bridge** | Any MCP-capable agent can report to the dashboard without code changes |
+| 🔒 **Local-first** | Runs on your machine and stores runs in local SQLite; traces never leave it unless you configure a webhook |
 
 ```bash
 npm install -g agent-visibility --allow-scripts=better-sqlite3
@@ -96,7 +107,40 @@ agentscope --help                  # Show CLI help
 
 The command `visibility` is also provided as an alias for `agentscope`.
 
-## 🧭 How It Works
+Your agents are now fully observable. Click a demo scenario in the dashboard to see what a traced run looks like.
+
+### CLI options
+
+| Option | What it does |
+|---|---|
+| `--port <n>` | Dashboard port (default `4242`) |
+| `--mcp` | Also start the MCP bridge on `:4243` |
+| `--mcp-port <n>` | MCP bridge port |
+| `--no-open` | Don't open the browser |
+| `--host <addr>` | Listen address (default `127.0.0.1`; anything else needs `--password`) |
+| `--password <pwd>` | Password-protect the dashboard |
+| `--licence <key>` | Unlock the commercial data API |
+
+### MCP
+
+Start with `agentscope --mcp`, then add this to your agent's MCP config:
+
+```json
+{ "mcpServers": { "agentscope": { "url": "http://localhost:4243/sse" } } }
+```
+
+The agent gets tools such as `register_agent`, `set_goal`, `log_event`, `log_llm_turn`, `log_tool_call` and `finish_run`.
+
+### HTTP
+
+Anything that can send HTTP can report events:
+
+```bash
+curl -X POST localhost:4242/tool -H 'Content-Type: application/json' \
+  -d '{"tool":"set_goal","args":{"goal":"My task","run_id":"run-1"}}'
+```
+
+Saved runs can be downloaded from the dashboard or from `GET /export/run/<id>` and `GET /export/runs`.
 
 ```mermaid
 flowchart TD
@@ -118,15 +162,15 @@ The repository includes Python integrations for **LangChain**, **AutoGen**, and 
 
 **Setup:** Copy [`mavt_client.py`](./adapters/mavt_client.py) **and** the adapter you want into your Python project (in the same importable directory). Install the required Python dependencies for your framework, and keep the MAVT dashboard running while your workflow executes.
 
+The adapters are single files, not a pip package. Copy `mavt_client.py` plus the adapter you need from [`adapters/`](adapters/) into your project (`pip install requests`). If you installed from npm, they're in `$(npm root -g)/agent-visibility/adapters/`.
+
 ### LangChain
 
 **Files:** [`mavt_langchain.py`](./adapters/mavt_langchain.py) + [`mavt_client.py`](./adapters/mavt_client.py)  
 **Dependencies:** `pip install langchain-core requests`
 
 ```python
-from mavt_langchain import AgentscopeCallback
-
-callback = AgentscopeCallback(goal="Research and summarize a topic")
+from mavt_langchain import AgentscopeCallback   # pip install langchain-core
 
 # Attach to your existing LangChain runnable or agent.
 result = chain.invoke(input_data, config={"callbacks": [callback]})
@@ -157,7 +201,6 @@ scope.finish()
 **Dependencies:** `pip install crewai requests`
 
 ```python
-from crewai import Crew
 from mavt_crewai import AgentscopeListener
 
 listener = AgentscopeListener(goal="My task")
@@ -173,32 +216,44 @@ result = crew.kickoff()
 listener.finish()
 ```
 
-These snippets show **integration points**, not complete standalone agent applications. Framework APIs can change; check the linked adapter code and use a compatible framework version.
+If the dashboard is password-protected, create an API key in the dashboard's **Keys** panel and pass it as `api_key="mavt_sk_..."` to any adapter, or set `VISIBILITY_API_KEY`. If the dashboard isn't reachable, the adapter prints one warning and stops sending events for that run, so your agents never wait on it.
+
+---
+
+## Security
+
+Traces contain your prompts and model outputs, so the dashboard is locked down by default:
+
+- **Local only.** It listens on `127.0.0.1`. To share it on a network, pass `--host 0.0.0.0` **and** `--password <pwd>`; it refuses to start on a non-local address without a password.
+- **No cross-site access.** Requests from other websites are rejected (no CORS, `Origin` and `Host` checks against DNS rebinding). To allow one specific browser origin, set `VISIBILITY_CORS_ORIGIN`.
+- **Password mode.** `--password` protects the dashboard (session cookie, `HttpOnly`, `SameSite=Strict`); agents authenticate with API keys (`X-API-Key`). The `--mcp` bridge is authenticated automatically.
+- **MCP bridge** (`:4243`) accepts local connections only.
+
+---
+
+## Licensing
+
+MAVT is dual-licensed (see [LICENSE](LICENSE)):
+
+- **Free (MIT):** individuals, teams under 10 people, open source, evaluation.
+- **Commercial licence:** organisations of 10+ people, or use in a revenue-generating product or hosted service. To get one, open an issue or email the author.
+
+Licence keys (`--licence MAVT-TEAM-YYYYMM-<signature>`) are Ed25519-signed and checked offline; nothing phones home.
+
+---
 
 ## 🔗 Optional MCP Bridge
 
 Run the dashboard and MCP server together:
 
-```bash
-agentscope --mcp
-```
+| Alert | Trigger |
+|---|---|
+| 💸 Token budget | Agent uses ≥ X% of its token budget (only for agents registered with `token_budget`) |
+| ⏳ Agent stuck | A running agent is silent for more than N seconds |
+| ❌ Critic fail rate | Critic failure rate exceeds X% |
+| ⏱️ Slow run | A run takes much longer than recent runs |
 
-| Component | Default local endpoint |
-| --- | --- |
-| Dashboard | `http://localhost:4242` |
-| MCP SSE endpoint | `http://localhost:4243/sse` |
-
-For MCP clients supporting the **legacy SSE transport**, a sample client configuration is:
-
-```json
-{
-  "mcpServers": {
-    "agentscope": {
-      "url": "http://localhost:4243/sse"
-    }
-  }
-}
-```
+Alerts appear as toast notifications in the UI and are POSTed to any webhook URL you configure; Slack and Discord webhooks get formatted messages. Settings are saved to `~/.agentscope/alerts.json`.
 
 The bridge exposes tools including `register_agent`, `log_event`, `log_llm_turn`, `trace_step`, `log_tool_call`, `set_memory`, and `finish_run`.
 
@@ -254,13 +309,14 @@ multiagent-visibility-tool/
 - [x] LLM turn inspector
 - [x] Tool call traces
 - [x] Memory panel
-- [x] Run history and replay
-- [x] LangChain, AutoGen, and CrewAI adapters
-- [x] Alerts and webhooks
-- [x] Optional MCP bridge
-
-**Planned:**
-
+- [x] Run history & replay
+- [x] LangChain adapter
+- [x] AutoGen adapter
+- [x] CrewAI adapter
+- [x] Webhook alerts
+- [x] MCP bridge
+- [x] Password protection, API keys and audit log
+- [x] Run export
 - [ ] OpenTelemetry export
 - [ ] Cloud-hosted dashboard
 - [ ] Per-agent cost tracking
@@ -271,10 +327,21 @@ Have an integration idea? [Open an issue](https://github.com/hit1001/multiagent-
 
 Bug reports, documentation improvements, framework integrations, and pull requests are welcome.
 
-1. [Open an issue](https://github.com/hit1001/multiagent-visibility-tool/issues) to discuss major changes.
-2. Fork the repository and create a feature branch.
-3. Make and test your changes.
-4. Open a pull request explaining what changed and why.
+To work on it locally (Node 22+):
+
+```bash
+git clone https://github.com/hit1001/multiagent-visibility-tool
+cd multiagent-visibility-tool
+npm install
+npm test                                   # server, database, licence and security tests
+pip install langchain-core requests
+python test/test_adapters.py               # Python adapters against a real server
+npm run dev                                # dashboard on :4242
+```
+
+CI runs both test suites on every pull request. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+---
 
 ## 📄 License
 
