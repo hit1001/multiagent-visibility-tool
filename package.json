@@ -17,7 +17,7 @@
     "start": "node bin/visibility.js",
     "start:mcp": "node bin/visibility.js --mcp",
     "dev": "node bin/visibility.js --no-open",
-    "test": "node --test test/"
+    "test": "node --test \"test/*.test.js\""
   },
   "keywords": [
     "agent",
