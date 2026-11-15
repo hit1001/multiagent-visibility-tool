@@ -45,10 +45,23 @@ You open your terminal. You see... nothing useful.
 
 ---
 
+## Requirements
+
+- **Node.js 22 or newer** (Node 26 LTS recommended). Node 20 reached end-of-life in April 2026 and is no longer supported.
+- **npm 11+** (npm 12 recommended). On npm 12, dependency install scripts are blocked by default — allow the native SQLite build when installing globally:
+
+```bash
+npm install -g agent-visibility --allow-scripts=better-sqlite3
+```
+
+When working from a clone, `better-sqlite3` is already approved in `package.json` (`allowScripts`), so `npm install` builds it automatically. After a dependency upgrade, re-approve it with `npm install-scripts approve better-sqlite3`.
+
+---
+
 ## Get started in 60 seconds
 
 ```bash
-npm install -g agent-visibility
+npm install -g agent-visibility --allow-scripts=better-sqlite3
 agentscope
 ```
 
