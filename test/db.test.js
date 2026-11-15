@@ -9,7 +9,7 @@ db.init();
 
 test('records a run with agents and events', () => {
   db.startRun('r1', 'goal', 1000);
-  db.updateRunGoal('r1', 'updated goal');
+  db.startRun('r1', 'updated goal', 1000);
   db.appendRunAgent('r1', 'a');
   db.appendRunAgent('r1', 'b');
   db.appendRunAgent('r1', 'a'); // duplicates ignored
@@ -33,7 +33,7 @@ test('computes metrics from finished runs', () => {
 });
 
 test('manages API keys, audit log and alerts', () => {
-  db.createApiKey('k1', 'ci', 'hash1', 60, null);
+  db.createApiKey('k1', 'ci', 'hash1', 60);
   assert.strictEqual(db.getApiKeyByHash('hash1').id, 'k1');
   db.appendAudit('k1', 'log_event', 'r1');
   assert.strictEqual(db.listAudit({ keyId: 'k1' }).length, 1);

@@ -75,10 +75,12 @@ Your agents are now fully observable.
 
 Drop-in Python adapters — two lines of code, full visibility.
 
+The adapters are single files, not a pip package. Copy `mavt_client.py` plus the adapter you need from [`adapters/`](adapters/) into your project (`pip install requests`). If you installed from npm, they're in `$(npm root -g)/agent-visibility/adapters/`.
+
 ### LangChain
 
 ```python
-from adapters.langchain import AgentscopeCallback
+from mavt_langchain import AgentscopeCallback   # pip install langchain-core
 
 AgentExecutor(agent=agent, tools=tools,
               callbacks=[AgentscopeCallback(goal="My task")])
@@ -87,7 +89,7 @@ AgentExecutor(agent=agent, tools=tools,
 ### AutoGen
 
 ```python
-from adapters.autogen import track
+from mavt_autogen import track
 
 scope = track(agents=[orchestrator, researcher, coder], goal="My task")
 # ... run your agents ...
@@ -97,7 +99,7 @@ scope.finish()
 ### CrewAI
 
 ```python
-from adapters.crewai import AgentscopeListener
+from mavt_crewai import AgentscopeListener
 
 listener = AgentscopeListener(goal="My task")
 crew = Crew(agents=[...], tasks=[...], step_callback=listener)
@@ -105,7 +107,7 @@ result = crew.kickoff()
 listener.finish()
 ```
 
-If the dashboard is password-protected, create an API key in the dashboard's **Keys** panel and pass it as `api_key="mavt_sk_..."` to any adapter, or set `VISIBILITY_API_KEY`.
+If the dashboard is password-protected, create an API key in the dashboard's **Keys** panel and pass it as `api_key="mavt_sk_..."` to any adapter, or set `VISIBILITY_API_KEY`. If the dashboard isn't reachable, the adapter prints one warning and stops sending events for that run, so your agents never wait on it.
 
 ---
 

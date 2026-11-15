@@ -34,7 +34,6 @@ function init() {
       label        TEXT DEFAULT '',
       key_hash     TEXT NOT NULL,
       rate_limit   INTEGER DEFAULT 60,
-      token_budget INTEGER,
       created_at   INTEGER NOT NULL,
       last_used    INTEGER
     );
@@ -61,11 +60,6 @@ function startRun(runId, goal, startedAt) {
   if (!db) return;
   db.prepare('INSERT OR REPLACE INTO runs (id, goal, status, started_at) VALUES (?,?,?,?)')
     .run(runId, goal || '', 'running', startedAt);
-}
-
-function updateRunGoal(runId, goal) {
-  if (!db) return;
-  db.prepare('UPDATE runs SET goal=? WHERE id=?').run(goal, runId);
 }
 
 function finishRun(runId, status, finishedAt, summary) {
@@ -139,15 +133,15 @@ function exportRuns({ since = 0, status = null, limit = 100 } = {}) {
 }
 
 // ── API keys ──────────────────────────────────────────────────────────────────
-function createApiKey(id, label, keyHash, rateLimit, tokenBudget) {
+function createApiKey(id, label, keyHash, rateLimit) {
   if (!db) return;
-  db.prepare('INSERT INTO api_keys (id,label,key_hash,rate_limit,token_budget,created_at) VALUES (?,?,?,?,?,?)')
-    .run(id, label, keyHash, rateLimit, tokenBudget || null, Date.now());
+  db.prepare('INSERT INTO api_keys (id,label,key_hash,rate_limit,created_at) VALUES (?,?,?,?,?)')
+    .run(id, label, keyHash, rateLimit, Date.now());
 }
 
 function listApiKeys() {
   if (!db) return [];
-  return db.prepare('SELECT id,label,rate_limit,token_budget,created_at,last_used FROM api_keys ORDER BY created_at DESC').all();
+  return db.prepare('SELECT id,label,rate_limit,created_at,last_used FROM api_keys ORDER BY created_at DESC').all();
 }
 
 function getApiKeyByHash(hash) {
@@ -218,7 +212,7 @@ function getLastRunDurations(limit = 10) {
 }
 
 module.exports = {
-  init, startRun, updateRunGoal, finishRun, appendRunAgent, persistEvent,
+  init, startRun, finishRun, appendRunAgent, persistEvent,
   listRuns, getRun, getRunEvents, deleteRun, exportRuns,
   createApiKey, listApiKeys, getApiKeyByHash, touchApiKey, deleteApiKey,
   appendAudit, listAudit,

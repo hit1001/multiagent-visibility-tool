@@ -66,7 +66,7 @@ const children = [];
 function spawn_(script) {
   const child = spawn(process.execPath, [script], { stdio:'inherit', env });
   children.push(child);
-  child.on('exit', code => { if (code) process.exit(code); });
+  child.on('exit', code => { if (code) { shutdown(); process.exit(code); } }); // don't orphan the other child
 }
 
 function shutdown() { children.forEach(c => { try { c.kill('SIGTERM'); } catch (_) {} }); }

@@ -32,9 +32,8 @@ function start(script, env, readyText) {
   });
 }
 
-async function startServer(env = {}) {
+async function startServer(env = {}, home = tmpHome()) {
   const port = await freePort();
-  const home = tmpHome();
   const child = await start('src/server.js', { HOME: home, VISIBILITY_PORT: String(port), ...env }, 'Ctrl+C to stop');
   return { port, home, child, stop: () => child.kill() };
 }

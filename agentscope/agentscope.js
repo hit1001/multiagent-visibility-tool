@@ -27,6 +27,9 @@ const TOOLS = [
   { name: 'log_llm_turn',   description: 'Log a full LLM conversation turn (messages in + response out + optional thinking). Use this to expose the exact context sent to and received from the model.',
     inputSchema: { type:'object', required:['agent'], properties: { agent:{type:'string'}, model:{type:'string'}, prompt_tokens:{type:'number'}, completion_tokens:{type:'number'}, latency_ms:{type:'number'}, stop_reason:{type:'string'}, messages:{type:'array',items:{type:'object',properties:{role:{type:'string'},content:{type:'string'}}}}, response:{type:'string'}, thinking:{type:'string'} } } },
   { name: 'trace_step',     description: 'Draw an arrow between two agents on the canvas.',  inputSchema: { type:'object', required:['from_agent','to_agent'], properties: { from_agent:{type:'string'}, to_agent:{type:'string'}, label:{type:'string'}, arrow_type:{type:'string',enum:['msg','result','retry','tool']} } } },
+  { name: 'log_tool_call',  description: 'Log a tool invocation (input, output, latency, error) to the Tools tab.', inputSchema: { type:'object', required:['agent','tool_name'], properties: { agent:{type:'string'}, tool_name:{type:'string'}, input:{type:'string'}, output:{type:'string'}, latency_ms:{type:'number'}, error:{type:'string'} } } },
+  { name: 'log_embedding',  description: 'Log an embedding call to the Tools tab.',            inputSchema: { type:'object', required:['agent','text'], properties: { agent:{type:'string'}, text:{type:'string'}, model:{type:'string'}, dims:{type:'number'}, latency_ms:{type:'number'} } } },
+  { name: 'log_retrieval',  description: 'Log a retrieval/search and its top results to the Tools tab.', inputSchema: { type:'object', required:['agent','query'], properties: { agent:{type:'string'}, query:{type:'string'}, results:{type:'array',items:{type:'object',properties:{text:{type:'string'},score:{type:'number'}}}}, latency_ms:{type:'number'} } } },
   { name: 'set_memory',     description: 'Write a value to the shared memory panel.',        inputSchema: { type:'object', required:['key','value'], properties: { key:{type:'string'}, value:{type:'string'}, op:{type:'string',enum:['write','read']} } } },
   { name: 'set_agent_state',description: 'Update an agent status on the dashboard.',         inputSchema: { type:'object', required:['agent_id','status'], properties: { agent_id:{type:'string'}, status:{type:'string',enum:['idle','running','active','done','error']} } } },
   { name: 'set_goal',       description: 'Set the run goal and mark the run as started.',    inputSchema: { type:'object', required:['goal'], properties: { goal:{type:'string'}, run_id:{type:'string'} } } },
@@ -64,7 +67,7 @@ async function handleMsg(msg, send) {
     const found = TOOLS.find(t => t.name === name);
     if (!found) { send({ jsonrpc:'2.0', id, error:{ code:-32601, message:`Unknown tool: ${name}` } }); return; }
     const result = await forward(name, args || {});
-    send({ jsonrpc:'2.0', id, result:{ content:[{ type:'text', text:JSON.stringify(result) }], isError: result.ok === false } });
+    send({ jsonrpc:'2.0', id, result:{ content:[{ type:'text', text:JSON.stringify(result) }], isError: result.ok === false || !!result.error } });
   } else if (method === 'notifications/initialized') {
     // no response
   } else if (id !== undefined) {

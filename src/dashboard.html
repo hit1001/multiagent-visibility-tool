@@ -457,6 +457,10 @@ canvas{display:block;width:100%}
 <script>
 const SERVER = location.origin;
 
+// Agent-supplied text is untrusted (it can quote web pages an agent read): escape it before any innerHTML.
+const esc   = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+const jsArg = s => esc(JSON.stringify(String(s))); // string literal for inline onclick handlers
+
 const ROLE_COLORS = {
   orchestrator:'#8b7cf8', researcher:'#2dd4b0', coder:'#60a5fa',
   critic:'#f59e0b', synthesiser:'#60a5fa', worker:'#2dd4b0',
@@ -700,7 +704,7 @@ function updateToolOverlay(item, show, seq){
   ov.innerHTML=`<div class="tool-overlay-hdr">
     <span class="tool-seq">#${seq}</span>
     <span class="tool-kind" style="background:${bg};color:${col}">${kindLabel}</span>
-    <span class="tool-agent-name" style="color:${agentColor}">${agentLabel}</span>
+    <span class="tool-agent-name" style="color:${esc(agentColor)}">${esc(agentLabel)}</span>
   </div>
   ${toolBody(item)}`;
   ov.style.display='block';
@@ -732,18 +736,18 @@ function renderAgents(){
     const st=a.status||'idle', display=st==='idle'&&reg[id]?'registered':st;
     const row=document.createElement('div'); row.className='agent-row '+display;
     row.innerHTML = `<div class="agent-dot"></div>
-      <span class="agent-name" style="color:${st==='idle'?'var(--text)':col}">${r.label}</span>
-      <span class="agent-role" style="background:${hexA(col,.14)};color:${col}">${r.role}</span>`;
+      <span class="agent-name" style="color:${st==='idle'?'var(--text)':esc(col)}">${esc(r.label)}</span>
+      <span class="agent-role" style="background:${esc(hexA(col,.14))};color:${esc(col)}">${esc(r.role)}</span>`;
     el.appendChild(row);
   });
 }
 
 // ── Memory tab ────────────────────────────────────────────────────────────────
 function memSentence(k, m){
-  if (!m) return `Nothing has been stored under <b>${k}</b> yet.`;
+  if (!m) return `Nothing has been stored under <b>${esc(k)}</b> yet.`;
   const v = String(m.value);
   const short = v.slice(0,90)+(v.length>90?'…':'');
-  return `<b>${k}</b> was ${m.op==='read'?'read as':'set to'}: "${short}"`;
+  return `<b>${esc(k)}</b> was ${m.op==='read'?'read as':'set to'}: "${esc(short)}"`;
 }
 
 function renderMem(){
@@ -781,7 +785,7 @@ const LOG_VERB = {
 function logSentence(ev){
   const label = (S.registry[ev.agent]?.label) || ev.agent;
   const verb  = LOG_VERB[ev.event_type] || ev.event_type;
-  return `<b>${label}</b> ${verb} — ${ev.message}`;
+  return `<b>${esc(label)}</b> ${esc(verb)} — ${esc(ev.message)}`;
 }
 
 function addLog(ev, prepend=true){
@@ -790,7 +794,7 @@ function addLog(ev, prepend=true){
   const [bg,col]=(TAG[ev.event_type]||'rgba(255,255,255,.06)|#9ca3af').split('|');
   const d=new Date(ev.ts||Date.now()), ts=`${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`;
   const row=document.createElement('div'); row.className='log-row';
-  row.innerHTML=`<span class="log-tag" style="background:${bg};color:${col}">${ev.event_type}</span><span class="log-msg">${logSentence(ev)}</span><span class="log-time">${ts}</span>`;
+  row.innerHTML=`<span class="log-tag" style="background:${bg};color:${col}">${esc(ev.event_type)}</span><span class="log-msg">${logSentence(ev)}</span><span class="log-time">${ts}</span>`;
   if (prepend) log.insertBefore(row,log.firstChild); else log.appendChild(row);
   if (log.children.length>80) log.removeChild(log.lastChild);
 }
@@ -820,32 +824,31 @@ function toolBody(item){
   const agentColor = S.registry[item.agent]?.color || '#6b7280';
   const blk = (label, val, full=false) =>
     `<div class="tool-block${full?' full':''}"><span class="tb-label">${label}</span><div class="tb-val">${val}</div></div>`;
-  const agent = `<span style="color:${agentColor};font-weight:600">${agentLabel}</span>`;
+  const agent = `<span style="color:${esc(agentColor)};font-weight:600">${esc(agentLabel)}</span>`;
   switch(item.kind){
     case 'embedding':
       return `<div class="tool-blocks">
         ${blk('Agent', agent)}
-        ${blk('Model', item.model||'—')}
-        ${blk('Dimensions', item.dims ? item.dims+'d' : '—')}
-        ${blk('Input text', trunc(item.text, 300), true)}
+        ${blk('Model', esc(item.model||'—'))}
+        ${blk('Dimensions', item.dims ? esc(item.dims)+'d' : '—')}
+        ${blk('Input text', esc(trunc(item.text, 300)), true)}
       </div>`;
     case 'retrieval': {
       const n=(item.results||[]).length, top=item.results?.[0];
       return `<div class="tool-blocks">
         ${blk('Agent', agent)}
         ${blk('Results found', String(n))}
-        ${blk('Query', trunc(item.query, 300), true)}
-        ${top ? blk('Best match', `<span style="color:var(--teal)">score ${top.score.toFixed(2)}</span> — ${trunc(top.text, 200)}`, true) : ''}
+        ${blk('Query', esc(trunc(item.query, 300)), true)}
+        ${top ? blk('Best match', `<span style="color:var(--teal)">score ${esc(Number(top.score).toFixed(2))}</span> — ${esc(trunc(top.text, 200))}`, true) : ''}
       </div>`;
     }
     case 'tool_call': {
       const ok=!item.error;
-      const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       return `<div class="tool-blocks">
         ${blk('Agent', agent)}
-        ${blk('Tool', `<b>${item.tool_name}</b>`)}
+        ${blk('Tool', `<b>${esc(item.tool_name)}</b>`)}
         ${blk('Status', ok ? '<span style="color:var(--green)">✓ success</span>' : '<span style="color:var(--coral)">✗ failed</span>')}
-        ${item.latency_ms ? blk('Latency', item.latency_ms+'ms') : ''}
+        ${item.latency_ms ? blk('Latency', esc(item.latency_ms)+'ms') : ''}
       </div>
       ${item.input ? `<div class="llm-response" style="border-top:1px solid rgba(255,255,255,.06)"><div class="llm-section-label" style="color:var(--blue)">↑ input</div><div class="llm-response-text" style="color:var(--muted)">${esc(item.input)}</div></div>` : ''}
       ${ok && item.output ? `<div class="llm-response"><div class="llm-section-label" style="color:var(--green)">↓ output</div><div class="llm-response-text">${esc(item.output)}</div></div>` : ''}
@@ -853,25 +856,24 @@ function toolBody(item){
     }
     case 'generation': {
       const total = item.prompt_tokens + item.completion_tokens;
-      const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       const msgs = (item.messages||[]).map(m =>
-        `<div class="llm-turn ${m.role}"><div class="llm-role">${m.role}</div><div class="llm-content">${esc(m.content)}</div></div>`
+        `<div class="llm-turn ${esc(m.role)}"><div class="llm-role">${esc(m.role)}</div><div class="llm-content">${esc(m.content)}</div></div>`
       ).join('');
       return `<div class="tool-blocks">
         ${blk('Agent', agent)}
-        ${blk('Model', item.model||'—')}
-        ${blk('Prompt tokens', item.prompt_tokens.toLocaleString())}
-        ${blk('Completion tokens', item.completion_tokens.toLocaleString())}
-        ${blk('Total tokens', total.toLocaleString())}
-        ${item.latency_ms ? blk('Latency', item.latency_ms+'ms') : ''}
-        ${item.stop_reason ? blk('Stop reason', item.stop_reason) : ''}
+        ${blk('Model', esc(item.model||'—'))}
+        ${blk('Prompt tokens', esc(item.prompt_tokens.toLocaleString()))}
+        ${blk('Completion tokens', esc(item.completion_tokens.toLocaleString()))}
+        ${blk('Total tokens', esc(total.toLocaleString()))}
+        ${item.latency_ms ? blk('Latency', esc(item.latency_ms)+'ms') : ''}
+        ${item.stop_reason ? blk('Stop reason', esc(item.stop_reason)) : ''}
       </div>
       ${msgs ? `<div class="llm-thread">${msgs}</div>` : ''}
       ${item.thinking ? `<div class="llm-thinking"><div class="llm-section-label">◎ thinking</div><div class="llm-thinking-text">${esc(item.thinking)}</div></div>` : ''}
       ${item.response ? `<div class="llm-response"><div class="llm-section-label">↩ response</div><div class="llm-response-text">${esc(item.response)}</div></div>` : ''}`;
     }
     default:
-      return `<div class="tool-blocks">${blk('Raw', `<pre style="font-size:10px;white-space:pre-wrap">${JSON.stringify(item,null,2)}</pre>`, true)}</div>`;
+      return `<div class="tool-blocks">${blk('Raw', `<pre style="font-size:10px;white-space:pre-wrap">${esc(JSON.stringify(item,null,2))}</pre>`, true)}</div>`;
   }
 }
 
@@ -890,9 +892,9 @@ function addInternal(item, prepend=true, seqOverride=null){
     <span class="tool-chevron">▶</span>
     <span class="tool-seq">#${seq}</span>
     <span class="tool-kind" style="background:${bg};color:${col}">${kindLabel}</span>
-    <span class="tool-agent-name" style="color:${agentColor}">${agentLabel}</span>
-    <span class="tool-preview">${toolPreview(item)}</span>
-    ${item.latency_ms?`<span class="tool-lat">${item.latency_ms}ms</span>`:''}
+    <span class="tool-agent-name" style="color:${esc(agentColor)}">${esc(agentLabel)}</span>
+    <span class="tool-preview">${esc(toolPreview(item))}</span>
+    ${item.latency_ms?`<span class="tool-lat">${esc(item.latency_ms)}ms</span>`:''}
   </summary>
   <div class="tool-body">${toolBody(item)}</div>`;
 
@@ -915,7 +917,7 @@ function renderPlan(){
     const r=S.registry[t.agent]||{}, col=r.color||'#6b7280';
     const done=(S.agents[t.agent]?.status==='done')||S.metrics.steps>i+2;
     const row=document.createElement('div'); row.className='plan-row';
-    row.innerHTML=`<div class="plan-dot" style="background:${done?'#4ade80':col}"></div><span class="plan-agent" style="color:${col}">${t.agent}</span><span class="plan-task">${t.task}</span>${done?'<span class="plan-done">done</span>':''}`;
+    row.innerHTML=`<div class="plan-dot" style="background:${done?'#4ade80':esc(col)}"></div><span class="plan-agent" style="color:${esc(col)}">${esc(t.agent)}</span><span class="plan-task">${esc(t.task)}</span>${done?'<span class="plan-done">done</span>':''}`;
     pl.appendChild(row);
   });
 }
@@ -1099,14 +1101,14 @@ function renderRuns(runs) {
     const card = document.createElement('div');
     card.className = 'run-card'+(run.id===replayRunId?' selected':'');
     card.innerHTML =
-      `<div class="run-goal">${run.goal||'—'}</div>`+
+      `<div class="run-goal">${esc(run.goal||'—')}</div>`+
       `<div class="run-meta">`+
         `<div class="run-status-dot" style="background:${sc}"></div>`+
         `<span class="run-time">${relTime(run.started_at)}</span>`+
-        (steps!=null?`<span class="run-steps">${steps} steps</span>`:'') +
+        (steps!=null?`<span class="run-steps">${esc(steps)} steps</span>`:'') +
         (agents.length?`<span class="run-agents">${agents.length} agent${agents.length>1?'s':''}</span>`:'')+
-        `<button class="run-export-btn" title="Download run JSON" onclick="downloadRun(event,'${run.id}')">↓</button>`+
-        `<button class="run-delete-btn" title="Delete run" onclick="deleteRun(event,'${run.id}')">✕</button>`+
+        `<button class="run-export-btn" title="Download run JSON" onclick="downloadRun(event,${jsArg(run.id)})">↓</button>`+
+        `<button class="run-delete-btn" title="Delete run" onclick="deleteRun(event,${jsArg(run.id)})">✕</button>`+
       `</div>`;
     card.addEventListener('click', () => loadRunReplay(run.id, run.goal));
     el.appendChild(card);
@@ -1244,21 +1246,21 @@ async function renderCompare() {
     const [tA,tB] = cls(sumA.tokens,sumB.tokens,true);
 
     const fmt = (v,suf='') => v!=null ? (v>999?(v/1000).toFixed(1)+'k':v)+suf : '—';
-    const hdr = g => (g||'run').slice(0,22)+'…';
+    const hdr = g => esc((g||'run').slice(0,22))+'…';
 
     content.innerHTML =
       `<table class="cmp-table"><thead><tr><th>Metric</th><th>${hdr(rA.goal)}</th><th>${hdr(rB.goal)}</th></tr></thead><tbody>`+
-      `<tr><td>Status</td><td>${rA.status}</td><td>${rB.status}</td></tr>`+
+      `<tr><td>Status</td><td>${esc(rA.status)}</td><td>${esc(rB.status)}</td></tr>`+
       `<tr><td>Duration</td><td class="${dA}">${durA!=null?durA.toFixed(1)+'s':'—'}</td><td class="${dB}">${durB!=null?durB.toFixed(1)+'s':'—'}</td></tr>`+
-      `<tr><td>Steps</td><td>${sumA.steps??'—'}</td><td>${sumB.steps??'—'}</td></tr>`+
+      `<tr><td>Steps</td><td>${esc(sumA.steps??'—')}</td><td>${esc(sumB.steps??'—')}</td></tr>`+
       `<tr><td>Tokens</td><td class="${tA}">${fmt(sumA.tokens)}</td><td class="${tB}">${fmt(sumB.tokens)}</td></tr>`+
       `<tr><td>Events persisted</td><td>${rA.event_count??'—'}</td><td>${rB.event_count??'—'}</td></tr>`+
       `<tr><td>Agents</td><td>${agA||'—'}</td><td>${agB||'—'}</td></tr>`+
       `<tr><td>Started</td><td>${new Date(rA.started_at).toLocaleString()}</td><td>${new Date(rB.started_at).toLocaleString()}</td></tr>`+
       `</tbody></table>`+
       `<div class="cmp-actions">`+
-        `<button class="cmp-run-btn" onclick="closeCompare();loadRunReplay('${rA.id}','')">Replay A</button>`+
-        `<button class="cmp-run-btn" onclick="closeCompare();loadRunReplay('${rB.id}','')">Replay B</button>`+
+        `<button class="cmp-run-btn" onclick="closeCompare();loadRunReplay(${jsArg(rA.id)},'')">Replay A</button>`+
+        `<button class="cmp-run-btn" onclick="closeCompare();loadRunReplay(${jsArg(rB.id)},'')">Replay B</button>`+
       `</div>`;
   } catch (_) {
     content.innerHTML = '<div class="empty" style="padding:8px 0">Error loading runs</div>';
@@ -1319,8 +1321,8 @@ function showAlertToast(payload) {
   pill.className = `alert-pill ${meta.cls}`;
   pill.innerHTML =
     `<span class="alert-icon">${meta.icon}</span>`+
-    `<div class="alert-body"><div class="alert-type">${meta.label}</div>`+
-    `<div class="alert-detail">${meta.detail(payload)}</div></div>`+
+    `<div class="alert-body"><div class="alert-type">${esc(meta.label)}</div>`+
+    `<div class="alert-detail">${esc(meta.detail(payload))}</div></div>`+
     `<button class="alert-dismiss" onclick="this.closest('.alert-pill').remove()">×</button>`;
 
   const toast = document.getElementById('alert-toast');
@@ -1339,8 +1341,8 @@ async function loadAlertHistory() {
       const meta = ALERT_META[r.type] || { icon:'ℹ️', cls:'token' };
       const ago  = relTime(r.fired_at);
       return `<div class="alert-hist-row">`+
-        `<span class="alert-hist-type" style="color:var(--amber)">${meta.icon} ${r.type.replace(/_/g,' ')}</span>`+
-        `<span class="alert-hist-detail">${r.detail||''}</span>`+
+        `<span class="alert-hist-type" style="color:var(--amber)">${meta.icon} ${esc(r.type.replace(/_/g,' '))}</span>`+
+        `<span class="alert-hist-detail">${esc(r.detail||'')}</span>`+
         `<span class="alert-hist-time">${ago}</span></div>`;
     }).join('');
   } catch (_) {}
@@ -1380,8 +1382,8 @@ async function loadKeys() {
     tbody.innerHTML = keys.map(k => {
       const created = new Date(k.created_at).toLocaleDateString();
       const used    = k.last_used ? relTime(k.last_used) : '—';
-      return `<tr><td>${k.label||'—'}</td><td>${k.rate_limit}/min</td><td>${created}</td><td>${used}</td>`+
-        `<td><button class="key-del-btn" onclick="deleteKey('${k.id}')">Revoke</button></td></tr>`;
+      return `<tr><td>${esc(k.label||'—')}</td><td>${esc(k.rate_limit)}/min</td><td>${created}</td><td>${used}</td>`+
+        `<td><button class="key-del-btn" onclick="deleteKey(${jsArg(k.id)})">Revoke</button></td></tr>`;
     }).join('');
   } catch (_) {}
 }

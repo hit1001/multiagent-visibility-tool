@@ -20,7 +20,7 @@ function validateLicence(key, { publicKey = PUBLIC_KEY_DER, now = Date.now() } =
     const pub = crypto.createPublicKey({ key: Buffer.from(publicKey, 'base64'), format: 'der', type: 'spki' });
     if (!crypto.verify(null, Buffer.from(payload(tier, expiry)), pub, Buffer.from(sig, 'base64url'))) return { valid: false };
     const year = parseInt(expiry.slice(0, 4)), month = parseInt(expiry.slice(4, 6));
-    const expires = new Date(year, month - 1, 1); // first of expiry month
+    const expires = new Date(year, month, 1); // valid through the end of the expiry month
     if (now > expires.getTime()) return { valid: false, reason: 'expired' };
     return { valid: true, tier: tier.toLowerCase(), expires };
   } catch { return { valid: false }; }

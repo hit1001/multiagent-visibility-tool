@@ -19,9 +19,6 @@
     "dev": "node bin/visibility.js --no-open",
     "test": "node --test test/"
   },
-  "dependencies": {
-    "better-sqlite3": "^13.2.0"
-  },
   "keywords": [
     "agent",
     "llm",
@@ -45,5 +42,8 @@
   },
   "allowScripts": {
     "better-sqlite3@13.2.0": true
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^13.2.0"
   }
 }

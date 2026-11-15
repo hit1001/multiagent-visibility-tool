@@ -1,9 +1,9 @@
 """
-agentscope · LangChain adapter
-================================
-Two-line integration:
+agent-visibility · LangChain adapter
+====================================
+Copy mavt_client.py and mavt_langchain.py into your project, then:
 
-    from agentscope.adapters.langchain import AgentscopeCallback
+    from mavt_langchain import AgentscopeCallback
     chain.invoke(input, config={"callbacks": [AgentscopeCallback()]})
 
 Or pass to any LangChain runnable / agent executor:
@@ -16,50 +16,32 @@ Requires: pip install langchain-core requests
 
 from __future__ import annotations
 
-import os
 import time
 import threading
 from typing import Any, Dict, List, Optional, Union
 from uuid import UUID
 
-import requests
+from langchain_core.callbacks import BaseCallbackHandler
+
+from mavt_client import VisibilityClient
 
 
-class AgentscopeCallback:
-    """LangChain BaseCallbackHandler that streams events to the agentscope dashboard."""
+class AgentscopeCallback(BaseCallbackHandler):
+    """LangChain callback handler that streams events to the agent-visibility dashboard."""
 
     def __init__(self, url: str = "http://localhost:4242", goal: str = "", api_key: Optional[str] = None):
-        self.url = url.rstrip("/")
-        # Needed when the dashboard runs with --password; create one in the dashboard's Keys panel.
-        key = api_key or os.environ.get("VISIBILITY_API_KEY")
-        self._headers = {"X-API-Key": key} if key else {}
+        super().__init__()
+        self._client = VisibilityClient(url, api_key)
+        self._post = self._client.post
         self._goal = goal
         self._run_id = str(int(time.time() * 1000))
         self._goal_set = False
-        self._registered: set[str] = set()
+        self._chains: dict[str, str] = {}        # uuid → chain/agent name
         self._llm_starts: dict[str, dict] = {}   # uuid → {model, t0}
         self._tool_starts: dict[str, dict] = {}  # uuid → {name, input, t0}
         self._lock = threading.Lock()
 
     # ── internal helpers ──────────────────────────────────────────────────────
-
-    def _post(self, tool: str, args: dict) -> None:
-        try:
-            requests.post(
-                f"{self.url}/tool",
-                json={"tool": tool, "args": args},
-                headers=self._headers,
-                timeout=2,
-            )
-        except Exception:
-            pass
-
-    def _ensure(self, name: str, role: str = "worker") -> None:
-        with self._lock:
-            if name in self._registered:
-                return
-            self._registered.add(name)
-        self._post("register_agent", {"id": name, "label": name, "role": role})
 
     def _ensure_goal(self, hint: str = "") -> None:
         with self._lock:
@@ -70,8 +52,7 @@ class AgentscopeCallback:
         self._post("set_goal", {"goal": goal, "run_id": self._run_id})
 
     def _first_agent(self) -> str:
-        with self._lock:
-            return next(iter(self._registered), "llm")
+        return self._client.first_agent or "llm"
 
     # ── chain callbacks ───────────────────────────────────────────────────────
 
@@ -85,11 +66,11 @@ class AgentscopeCallback:
         **kwargs: Any,
     ) -> None:
         name = (serialized or {}).get("name", "chain")
+        hint = str(inputs.get("input", inputs.get("question", ""))).strip()[:200] if isinstance(inputs, dict) else ""
+        self._ensure_goal(hint)  # start the run before registering, so agents belong to it
+        self._client.register(name, "orchestrator" if self._client.first_agent is None else "worker")
         with self._lock:
-            role = "orchestrator" if not self._registered else "worker"
-        self._ensure(name, role)
-        hint = str(inputs.get("input", inputs.get("question", ""))).strip()[:200]
-        self._ensure_goal(hint)
+            self._chains[str(run_id)] = name
         self._post("set_agent_state", {"agent_id": name, "status": "running"})
 
     def on_chain_end(
@@ -99,7 +80,11 @@ class AgentscopeCallback:
         run_id: UUID,
         **kwargs: Any,
     ) -> None:
-        pass  # finish_run is called explicitly via .finish() or on AgentExecutor end
+        with self._lock:
+            name = self._chains.pop(str(run_id), None)
+        if name:
+            self._post("set_agent_state", {"agent_id": name, "status": "done"})
+        # finish_run is called explicitly via .finish() or on AgentExecutor end
 
     def on_chain_error(
         self,
