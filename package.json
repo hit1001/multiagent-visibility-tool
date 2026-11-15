@@ -19,7 +19,7 @@
     "dev": "node bin/visibility.js --no-open"
   },
   "dependencies": {
-    "better-sqlite3": "^9.4.3"
+    "better-sqlite3": "^13.2.0"
   },
   "keywords": [
     "agent",
@@ -36,10 +36,13 @@
   ],
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/hit1001/multiagent-visibility-tool"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.2.0": true
   }
 }
