@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Sign in · Agent Visibility</title>
+<script>(function(){try{var t=localStorage.getItem('mavt-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}})()</script>
+<style>
+/*__THEME__*/
+body{display:grid;place-items:center;padding:16px}
+.card{width:340px;max-width:100%;padding:28px;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);box-shadow:var(--shadow)}
+.brand{display:flex;align-items:center;gap:8px;margin-bottom:20px;font-weight:600;letter-spacing:-.01em}
+.brand .icon{width:18px;height:18px;stroke-width:2.2;color:var(--accent)}
+h1{font-size:18px;font-weight:600;letter-spacing:-.015em}
+.lead{margin:4px 0 20px;color:var(--text-2)}
+.input,.btn{height:34px}
+.btn{width:100%}
+.error{min-height:20px;margin-top:10px;color:var(--err)}
+</style>
+</head>
+<body>
+<!--__ICONS__-->
+<main class="card">
+  <div class="brand"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg>Agent Visibility</div>
+  <h1>Sign in</h1>
+  <p class="lead">This dashboard is password-protected.</p>
+  <form method="POST" action="/auth/login">
+    <div class="field"><label for="password">Password</label><input class="input" id="password" type="password" name="password" autocomplete="current-password" autofocus required></div>
+    <button class="btn btn-primary" type="submit">Sign in</button>
+  </form>
+  <div class="error" role="alert">__ERR__</div>
+</main>
+</body>
+</html>

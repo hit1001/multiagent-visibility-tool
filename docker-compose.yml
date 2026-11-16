@@ -1,0 +1,18 @@
+# cp .env.example .env, set VISIBILITY_PASSWORD, then: docker compose up -d
+services:
+  dashboard:
+    build: .
+    ports:
+      - "4242:4242"
+    environment:
+      VISIBILITY_PASSWORD: ${VISIBILITY_PASSWORD:?Set VISIBILITY_PASSWORD in .env}
+      # Optional: 64 hex chars. Encrypts stored prompts and outputs. Keep a copy; data is unreadable without it.
+      VISIBILITY_ENCRYPTION_KEY: ${VISIBILITY_ENCRYPTION_KEY:-}
+      # Set to 1 when the dashboard is served over HTTPS (behind a TLS-terminating proxy).
+      VISIBILITY_COOKIE_SECURE: ${VISIBILITY_COOKIE_SECURE:-}
+    volumes:
+      - mavt-data:/data
+    restart: unless-stopped
+
+volumes:
+  mavt-data:

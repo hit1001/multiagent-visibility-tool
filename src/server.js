@@ -14,7 +14,32 @@ const IS_LOOPBACK = LOOPBACK_HOSTS.has(HOST);
 // ── Auth ───────────────────────────────────────────────────────────────────────
 const PASSWORD = process.env.VISIBILITY_PASSWORD || null;
 const INTERNAL_TOKEN = process.env.VISIBILITY_INTERNAL_TOKEN || null; // set by the CLI for the MCP bridge
-const sessions = new Set(); // in-memory session tokens (single-user)
+const sessions = new Map(); // session token → expiry timestamp (in-memory, single-user)
+const SESSION_TTL_MS = (Number(process.env.VISIBILITY_SESSION_TTL_HOURS) || 12) * 3600 * 1000;
+const COOKIE_FLAGS = 'HttpOnly; SameSite=Strict; Path=/' + (process.env.VISIBILITY_COOKIE_SECURE === '1' ? '; Secure' : '');
+function sessionValid(token) {
+  const exp = sessions.get(token);
+  if (!exp) return false;
+  if (Date.now() > exp) { sessions.delete(token); return false; }
+  return true;
+}
+// Lock out password guessing: 10 failed logins per address per 15 minutes.
+const loginFailures = new Map(); // address → { count, resetAt }
+const LOGIN_MAX_FAILURES = 10, LOGIN_WINDOW_MS = 15 * 60 * 1000;
+function loginLocked(addr) {
+  const f = loginFailures.get(addr);
+  if (f && Date.now() > f.resetAt) { loginFailures.delete(addr); return false; }
+  return !!f && f.count >= LOGIN_MAX_FAILURES;
+}
+function loginFailed(addr) {
+  const f = loginFailures.get(addr) || { count: 0, resetAt: Date.now() + LOGIN_WINDOW_MS };
+  f.count++; loginFailures.set(addr, f);
+}
+setInterval(() => { // drop expired sessions and lockouts
+  const now = Date.now();
+  for (const [t, exp] of sessions) if (now > exp) sessions.delete(t);
+  for (const [a, f] of loginFailures) if (now > f.resetAt) loginFailures.delete(a);
+}, 60000).unref();
 const rateLimiters = new Map(); // keyId → { count, resetAt }
 
 // Exposing the dashboard beyond this machine without a password would publish every trace.
@@ -64,7 +89,7 @@ function checkAuth(req) {
   }
   // Session cookie
   const cookies = parseCookies(req.headers['cookie'] || '');
-  if (cookies.agentscope_session && sessions.has(cookies.agentscope_session)) return { ok: true, keyId: null };
+  if (cookies.agentscope_session && sessionValid(cookies.agentscope_session)) return { ok: true, keyId: null };
   // API key header
   const raw = req.headers['x-api-key'] || '';
   if (raw && db) {
@@ -88,21 +113,22 @@ function checkAuth(req) {
 const { validateLicence } = require('./licence');
 const licence = validateLicence(process.env.VISIBILITY_LICENCE || null);
 
-// ── Login HTML ─────────────────────────────────────────────────────────────────
-const LOGIN_HTML = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>agent-visibility — login</title>
-<style>*{box-sizing:border-box;margin:0;padding:0}body{background:#0f1117;display:flex;align-items:center;justify-content:center;height:100vh;font-family:system-ui,sans-serif}
-.card{background:#1a1d27;border:1px solid #2a2d3e;border-radius:12px;padding:40px;width:320px;text-align:center}
-h2{color:#e2e8f0;margin-bottom:8px;font-size:18px}p{color:#64748b;font-size:13px;margin-bottom:24px}
-input{width:100%;background:#0f1117;border:1px solid #2a2d3e;border-radius:8px;color:#e2e8f0;padding:10px 14px;font-size:14px;outline:none;margin-bottom:12px}
-input:focus{border-color:#8b7cf8}button{width:100%;background:#8b7cf8;border:none;border-radius:8px;color:#fff;padding:11px;font-size:14px;cursor:pointer;font-weight:600}
-button:hover{background:#7c6fe0}.err{color:#f87171;font-size:12px;margin-top:8px;min-height:16px}</style></head>
-<body><div class="card"><h2>agent-visibility</h2><p>Enter your dashboard password</p>
-<form method="POST" action="/auth/login"><input type="password" name="password" placeholder="Password" autofocus>
-<button type="submit">Sign in</button></form><div class="err" id="e">__ERR__</div></div></body></html>`;
 
 // ── Persistence (optional — degrades gracefully if better-sqlite3 absent) ─────
+const { dataDir } = require('./db');
+const security  = require('./security');
+const pricing   = require('./pricing');
+const analytics = require('./analytics');
+const VERSION   = require('../package.json').version;
+let encKey = null;
+try { encKey = security.parseKey(process.env.VISIBILITY_ENCRYPTION_KEY); }
+catch (e) { console.error('[agentscope] ' + e.message); process.exit(1); } // never fall back to storing plain text
+pricing.loadOverrides(dataDir());
+const plugins   = require('./plugins');
+const workflows = require('./workflows');
+plugins.load(dataDir());
 let db = null;
-try { db = require('./db'); db.init(); }
+try { db = require('./db'); db.init({ key: encKey }); }
 catch (e) { console.warn('[agentscope] Persistence disabled:', e.message); db = null; }
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -113,7 +139,7 @@ function fresh() {
   return {
     agents: {}, registry: {}, memory: {}, events: [],
     arrows: [], plan: [], internals: [],
-    metrics: { steps: 0, tokens: 0, retries: 0 },
+    metrics: { steps: 0, tokens: 0, retries: 0, cost: 0 },
     goal: '', runId: null, status: 'idle', startedAt: null,
     clients: [],
     eventSeq: 0,
@@ -129,19 +155,26 @@ function persist(tool, args) {
 }
 
 // ── Alert engine ───────────────────────────────────────────────────────────────
-const ALERT_CONFIG_FILE = path.join(require('os').homedir(), '.agentscope', 'alerts.json');
+const ALERT_CONFIG_FILE = path.join(dataDir(), 'alerts.json');
 const alertConfig = {
   webhookUrl:       null,
   tokenBudgetPct:   90,    // fire when agent tokens >= N% of budget
   stuckAgentSec:    120,   // fire when running agent has no activity for N seconds
   criticFailRatePct: 50,   // fire when critic fail rate >= N% (min 3 events)
+  costBudgetUsd:    null,  // fire when a run's estimated cost reaches $N (null = off)
+  slowToolMs:       null,  // fire when a tool call takes >= N ms (null = off)
+  disabled:         [],    // alert types to mute, e.g. ['agent_stuck']
 };
+const ALERT_TYPES = ['token_budget_exceeded', 'agent_stuck', 'critic_fail_rate', 'run_duration_outlier', 'cost_budget_exceeded', 'slow_tool_call'];
 function applyAlertConfig(c) {
   const num = (v, lo, hi, cur) => { const n = Number(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : cur; };
   if ('webhookUrl'        in c) alertConfig.webhookUrl        = c.webhookUrl || null;
   if ('tokenBudgetPct'    in c) alertConfig.tokenBudgetPct    = num(c.tokenBudgetPct, 1, 100, alertConfig.tokenBudgetPct);
   if ('stuckAgentSec'     in c) alertConfig.stuckAgentSec     = num(c.stuckAgentSec, 10, Infinity, alertConfig.stuckAgentSec);
   if ('criticFailRatePct' in c) alertConfig.criticFailRatePct = num(c.criticFailRatePct, 1, 100, alertConfig.criticFailRatePct);
+  if ('costBudgetUsd'     in c) alertConfig.costBudgetUsd     = Number(c.costBudgetUsd) > 0 ? Number(c.costBudgetUsd) : null;
+  if ('slowToolMs'        in c) alertConfig.slowToolMs        = Number(c.slowToolMs) > 0 ? Number(c.slowToolMs) : null;
+  if (Array.isArray(c.disabled)) alertConfig.disabled         = c.disabled.filter(t => ALERT_TYPES.includes(t));
 }
 try { applyAlertConfig(JSON.parse(fs.readFileSync(ALERT_CONFIG_FILE, 'utf8'))); } catch (_) {} // no saved config yet
 function saveAlertConfig() {
@@ -161,7 +194,9 @@ let alertState = freshAlertState();
 function resetAlertState() { alertState = freshAlertState(); }
 function fireAlert(type, data) {
   if (suppressPersist) return; // never alert while replaying a stored run
+  if (alertConfig.disabled.includes(type)) return;
   const payload = { alert: type, runId: state.runId, goal: state.goal, ...data, ts: Date.now() };
+  plugins.emit('onAlert', payload);
   broadcast('alert', payload);
   if (db) try { db.appendAlert(type, data.detail || JSON.stringify(data), state.runId); } catch (_) {}
   if (!alertConfig.webhookUrl) return;
@@ -200,6 +235,19 @@ function checkTokenBudget(agentId) {
   if (pct >= alertConfig.tokenBudgetPct && !alertState.fired.has(key)) {
     alertState.fired.add(key);
     fireAlert('token_budget_exceeded', { agent: agentId, tokens: ag.tokens, budget, pct: +pct.toFixed(1) });
+  }
+}
+// Add an LLM call's estimated cost to its agent and the run (null = model not in the price table).
+function addCost(agentId, cost) {
+  if (cost == null) return;
+  const ag = state.agents[agentId];
+  ag.cost = +((ag.cost || 0) + cost).toFixed(6);
+  state.metrics.cost = +((state.metrics.cost || 0) + cost).toFixed(6);
+  const budget = alertConfig.costBudgetUsd;
+  if (budget && state.metrics.cost >= budget && !alertState.fired.has('run:cost')) {
+    alertState.fired.add('run:cost');
+    fireAlert('cost_budget_exceeded', { cost_usd: state.metrics.cost, budget_usd: budget,
+      detail: `Run cost $${state.metrics.cost.toFixed(4)} reached the $${budget} budget` });
   }
 }
 function checkCriticFails(agentId, event_type) {
@@ -299,6 +347,7 @@ const TOOLS = {
       state.agents[agent].tokens += tokens;
       state.agents[agent].calls  += 1;
       state.metrics.tokens       += tokens;
+      addCost(agent, pricing.costOfTotal(state.agents[agent].model, tokens));
     }
     state.metrics.steps++;
     alertState.lastActivity[agent] = Date.now();
@@ -378,7 +427,7 @@ const TOOLS = {
     const { status = 'done' } = a;
     state.status = status;
     const finishedAt = Date.now();
-    if (db && !suppressPersist) try { db.finishRun(state.runId, status, finishedAt, { steps: state.metrics.steps, tokens: state.metrics.tokens }); } catch (_) {}
+    if (db && !suppressPersist) try { db.finishRun(state.runId, status, finishedAt, { steps: state.metrics.steps, tokens: state.metrics.tokens, cost: state.metrics.cost || 0 }); } catch (_) {}
     persist('finish_run', a);
     broadcast('status', status);
     // Check for run duration outlier
@@ -444,6 +493,12 @@ const TOOLS = {
     state.internals.unshift(item);
     if (state.internals.length > 200) state.internals.pop();
     alertState.lastActivity[agent] = Date.now();
+    const slow = alertConfig.slowToolMs;
+    if (slow && latency_ms >= slow && !alertState.fired.has('slowtool:' + tool_name)) {
+      alertState.fired.add('slowtool:' + tool_name); // once per tool per run
+      fireAlert('slow_tool_call', { agent, tool: tool_name, latency_ms, threshold_ms: slow,
+        detail: `${tool_name} took ${latency_ms} ms (threshold ${slow} ms)` });
+    }
     broadcast('internal', item);
     return { ok: true };
   },
@@ -452,8 +507,9 @@ const TOOLS = {
     const { agent, prompt_tokens = 0, completion_tokens = 0, model = '', latency_ms = 0, stop_reason = 'stop', messages = [], response = null, thinking = null } = a;
     ensureAgent(agent);
     const total = prompt_tokens + completion_tokens;
+    const cost  = pricing.costOf(model || state.agents[agent].model, prompt_tokens, completion_tokens);
     const item = {
-      kind: 'generation', agent, prompt_tokens, completion_tokens, total, model, latency_ms, stop_reason,
+      kind: 'generation', agent, prompt_tokens, completion_tokens, total, cost, model, latency_ms, stop_reason,
       messages: (messages||[]).slice(0,30).map(m => ({ role: String(m.role||'user'), content: String(m.content||'').slice(0,2000) })),
       response: response ? String(response).slice(0,4000) : null,
       thinking: thinking ? String(thinking).slice(0,3000) : null,
@@ -467,7 +523,7 @@ const TOOLS = {
       state.metrics.tokens       += total;
     }
     alertState.lastActivity[agent] = Date.now();
-    if (total) checkTokenBudget(agent);
+    if (total) { addCost(agent, cost); checkTokenBudget(agent); }
     broadcast('internal', item);
     broadcast('agents', state.agents);
     broadcast('metrics', state.metrics);
@@ -476,6 +532,25 @@ const TOOLS = {
 };
 // alias: log_llm_turn → log_generation (richer name exposed in MCP)
 TOOLS.log_llm_turn = TOOLS.log_generation;
+
+// Tell plugins about every live tool call (never while replaying a stored run).
+let lastStartedRun = null;
+for (const [name, fn] of Object.entries(TOOLS)) {
+  TOOLS[name] = function (a) {
+    const result = fn(a);
+    if (suppressPersist) return result;
+    plugins.emit('onEvent', { tool: name, args: a, runId: state.runId });
+    if (name === 'set_goal' && state.runId !== lastStartedRun) {
+      lastStartedRun = state.runId;
+      plugins.emit('onRunStart', { runId: state.runId, goal: state.goal });
+    }
+    if (name === 'finish_run') {
+      plugins.emit('onRunFinish', { runId: state.runId, goal: state.goal, status: state.status,
+        metrics: { ...state.metrics }, durationMs: state.startedAt ? Date.now() - state.startedAt : null });
+    }
+    return result;
+  };
+}
 
 // ── Run replay ─────────────────────────────────────────────────────────────────
 function computeStateAt(runId, targetSeq) {
@@ -487,13 +562,18 @@ function computeStateAt(runId, targetSeq) {
   alertState = freshAlertState(); // replay must not touch the live run's alert tracking
   suppressBroadcast = true;
   suppressPersist   = true;
-  slice.forEach(ev => {
-    try {
-      const args = JSON.parse(ev.args);
-      const fn = TOOLS[ev.tool];
-      if (fn) fn(args);
-    } catch (_) {}
-  });
+  // Replay each event at the time it was recorded, so timestamps and durations show the real run.
+  const realNow = Date.now;
+  try {
+    slice.forEach(ev => {
+      Date.now = () => ev.ts;
+      try {
+        const args = JSON.parse(ev.args);
+        const fn = TOOLS[ev.tool];
+        if (fn) fn(args);
+      } catch (_) {}
+    });
+  } finally { Date.now = realNow; }
   const snap = snapshot();
   suppressBroadcast = false;
   suppressPersist   = false;
@@ -864,7 +944,15 @@ function runScenario(name) {
 }
 
 // ── Dashboard HTML ─────────────────────────────────────────────────────────────
-const HTML = fs.readFileSync(path.join(__dirname, 'dashboard.html'), 'utf8');
+// Pages share one design system: theme.css and icons.svg are inlined into each page at startup.
+const THEME = fs.readFileSync(path.join(__dirname, 'theme.css'), 'utf8');
+const ICONS = fs.readFileSync(path.join(__dirname, 'icons.svg'), 'utf8');
+const page = file => fs.readFileSync(path.join(__dirname, file), 'utf8')
+  .replace('/*__THEME__*/', () => THEME).replace('<!--__ICONS__-->', () => ICONS);
+const HTML = page('dashboard.html');
+const BUILDER_HTML = page('builder.html');
+const LOGIN_PAGE = page('login.html');
+const loginHtml = (error = '') => LOGIN_PAGE.replace('__ERR__', () => error);
 
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 const CORS = {
@@ -893,12 +981,19 @@ function body(req, res, cb) {
   req.on('end', () => { if (!aborted) cb(d); });
 }
 function json(res, data, status = 200) {
-  res.writeHead(status, { ...CORS, 'Content-Type': 'application/json' });
+  res.writeHead(status, { ...CORS, 'Content-Type': 'application/json', 'X-Content-Type-Options': 'nosniff' });
   res.end(JSON.stringify(data));
 }
 
 // ── HTTP server ────────────────────────────────────────────────────────────────
-const server = http.createServer((req, res) => {
+// Record an administrative action (who, what) in the audit log.
+function audit(auth, action, detail) {
+  if (db) try { db.appendAudit(auth && auth.keyId, action, state.runId, detail); } catch (_) {}
+}
+
+function handle(req, res) {
+  // Liveness probe for containers and load balancers: public, reveals nothing about traces.
+  if (req.method === 'GET' && req.url === '/healthz') { json(res, { ok: true, version: VERSION, persistence: !!db }); return; }
   if (!hostAllowed(req))   { json(res, { error: 'Invalid Host header' }, 421); return; }
   if (!originAllowed(req)) { json(res, { error: 'Cross-origin request blocked' }, 403); return; }
   if (req.method === 'OPTIONS') { res.writeHead(204, CORS); res.end(); return; }
@@ -909,28 +1004,37 @@ const server = http.createServer((req, res) => {
   // ── Auth routes (always public) ────────────────────────────────────────────
   if (req.method === 'GET' && pathname === '/login') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(LOGIN_HTML.replace('__ERR__', ''));
+    res.end(loginHtml());
     return;
   }
   if (req.method === 'POST' && pathname === '/auth/login') {
     body(req, res, data => {
       const params = new URLSearchParams(data);
       const pwd    = params.get('password') || '';
+      const addr   = req.socket.remoteAddress || 'unknown';
+      if (loginLocked(addr)) {
+        res.writeHead(429, { 'Content-Type': 'text/html', 'Retry-After': '900' });
+        res.end(loginHtml('Too many failed attempts. Try again in 15 minutes.')); return;
+      }
       if (PASSWORD && safeEqual(pwd, PASSWORD)) {
         const token = genToken();
-        sessions.add(token);
-        res.writeHead(302, { 'Set-Cookie': `agentscope_session=${token}; HttpOnly; SameSite=Strict; Path=/`, Location: '/' });
+        sessions.set(token, Date.now() + SESSION_TTL_MS);
+        loginFailures.delete(addr);
+        audit(null, 'admin.login', addr);
+        res.writeHead(302, { 'Set-Cookie': `agentscope_session=${token}; ${COOKIE_FLAGS}; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}`, Location: '/' });
         res.end(); return;
       }
+      loginFailed(addr);
+      audit(null, 'admin.login_failed', addr);
       setTimeout(() => { // slow down password guessing
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end(LOGIN_HTML.replace('__ERR__', 'Incorrect password'));
+        res.end(loginHtml('Incorrect password.'));
       }, 1000);
     }); return;
   }
   if (req.method === 'POST' && pathname === '/auth/logout') {
     const cookies = parseCookies(req.headers['cookie'] || '');
-    if (cookies.agentscope_session) sessions.delete(cookies.agentscope_session);
+    if (cookies.agentscope_session && sessions.delete(cookies.agentscope_session)) audit(null, 'admin.logout');
     res.writeHead(302, { 'Set-Cookie': 'agentscope_session=; HttpOnly; Path=/; Max-Age=0', Location: '/login' });
     res.end(); return;
   }
@@ -939,7 +1043,7 @@ const server = http.createServer((req, res) => {
   const auth = checkAuth(req);
   if (!auth.ok) {
     if (auth.reason === 'rate_limit') { json(res, { error: 'Rate limit exceeded' }, 429); return; }
-    if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html' || pathname === '/events')) {
+    if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html' || pathname === '/events' || pathname === '/builder')) {
       res.writeHead(302, { Location: '/login' }); res.end(); return;
     }
     json(res, { error: 'Unauthorized' }, 401); return;
@@ -950,6 +1054,13 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(HTML);
+    return;
+  }
+
+  // Workflow builder UI
+  if (req.method === 'GET' && pathname === '/builder') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(BUILDER_HTML);
     return;
   }
 
@@ -994,6 +1105,7 @@ const server = http.createServer((req, res) => {
     const clients = state.clients;
     state = fresh(); state.clients = clients;
     broadcast('reset', {});
+    audit(auth, 'admin.reset');
     json(res, { ok: true }); return;
   }
 
@@ -1025,6 +1137,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'DELETE' && /^\/runs\/[^/]+$/.test(pathname)) {
     const runId = pathname.slice(6);
     if (db) db.deleteRun(runId);
+    audit(auth, 'admin.run_delete', runId);
     json(res, { ok: true }); return;
   }
 
@@ -1039,6 +1152,7 @@ const server = http.createServer((req, res) => {
       try {
         applyAlertConfig(JSON.parse(data || '{}'));
         saveAlertConfig();
+        audit(auth, 'admin.alerts_config');
         json(res, alertConfig);
       } catch (e) { json(res, { error: e.message }, 400); }
     }); return;
@@ -1062,6 +1176,7 @@ const server = http.createServer((req, res) => {
         const raw = 'mavt_sk_' + crypto.randomBytes(16).toString('hex');
         const id  = crypto.randomBytes(4).toString('hex');
         db.createApiKey(id, label, hashKey(raw), rateLimit);
+        audit(auth, 'admin.key_create', id);
         json(res, { id, label, key: raw, rateLimit, note: 'Save this key — it will not be shown again' });
       } catch (e) { json(res, { error: e.message }, 400); }
     }); return;
@@ -1069,6 +1184,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'DELETE' && /^\/keys\/[^/]+$/.test(pathname)) {
     const id = pathname.slice(6);
     if (db) db.deleteApiKey(id);
+    audit(auth, 'admin.key_delete', id);
     json(res, { ok: true }); return;
   }
 
@@ -1101,6 +1217,61 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify(runs, null, 2)); return;
   }
 
+  // ── Workflow templates (made in the builder) ───────────────────────────────
+  if (req.method === 'GET' && pathname === '/workflows') {
+    json(res, db ? db.listWorkflows() : []); return;
+  }
+  // POST /workflows — create, or update when the body carries an existing id
+  if (req.method === 'POST' && pathname === '/workflows') {
+    body(req, res, data => {
+      try {
+        if (!db) { json(res, { error: 'Persistence disabled' }, 503); return; }
+        const input = JSON.parse(data || '{}');
+        const def = workflows.validate(input);
+        const id = typeof input.id === 'string' && db.getWorkflow(input.id) ? input.id : crypto.randomBytes(6).toString('hex');
+        db.saveWorkflow(id, def.name, def);
+        audit(auth, 'admin.workflow_save', id);
+        json(res, { id, ...def });
+      } catch (e) { json(res, { error: e.message }, 400); }
+    }); return;
+  }
+  // POST /workflows/:id/apply — register the template's agents on the dashboard
+  if (req.method === 'POST' && /^\/workflows\/[^/]+\/apply$/.test(pathname)) {
+    const wf = db ? db.getWorkflow(pathname.slice(11, -6)) : null;
+    if (!wf) { json(res, { error: 'Not found' }, 404); return; }
+    for (const a of workflows.inReportingOrder(wf.agents)) {
+      TOOLS.register_agent({ id: a.id, label: a.label, role: a.role, model: a.model, reports_to: a.reports_to, token_budget: a.token_budget });
+    }
+    audit(auth, 'admin.workflow_apply', wf.id);
+    json(res, { ok: true, registered: wf.agents.length }); return;
+  }
+  if (req.method === 'GET' && /^\/workflows\/[^/]+$/.test(pathname)) {
+    const wf = db ? db.getWorkflow(pathname.slice(11)) : null;
+    if (!wf) { json(res, { error: 'Not found' }, 404); return; }
+    json(res, wf); return;
+  }
+  if (req.method === 'DELETE' && /^\/workflows\/[^/]+$/.test(pathname)) {
+    const id = pathname.slice(11);
+    if (db) db.deleteWorkflow(id);
+    audit(auth, 'admin.workflow_delete', id);
+    json(res, { ok: true }); return;
+  }
+
+  // GET /plugins — which plugins are loaded
+  if (req.method === 'GET' && pathname === '/plugins') {
+    json(res, plugins.list()); return;
+  }
+
+  // ── Analytics: cost, usage and latency across recent runs ──────────────────
+  // GET /analytics[?days=30&limit=50]
+  if (req.method === 'GET' && pathname === '/analytics') {
+    if (!db) { json(res, { error: 'Persistence disabled' }, 503); return; }
+    const days  = Math.max(1, Math.min(365, parseInt(u2.searchParams.get('days')  || '30') || 30));
+    const limit = Math.max(1, Math.min(500, parseInt(u2.searchParams.get('limit') || '50') || 50));
+    const runs  = db.getRunsWithEvents({ since: Date.now() - days * 86400000, limit });
+    json(res, { window: { days, limit }, ...analytics.analyse(runs) }); return;
+  }
+
   // ── Data API (licence-gated) ───────────────────────────────────────────────
   if (req.method === 'GET' && pathname === '/api/v1/metrics') {
     if (!licence.valid) { json(res, { error: 'Licence required', upgrade: 'https://github.com/hit1001/multiagent-visibility-tool/blob/main/LICENSE' }, 402); return; }
@@ -1113,6 +1284,14 @@ const server = http.createServer((req, res) => {
   }
 
   json(res, { error: 'Not found' }, 404);
+}
+
+const server = http.createServer((req, res) => {
+  try { handle(req, res); }
+  catch (e) { // e.g. an encrypted run read without the key
+    console.error('[agentscope]', e.message);
+    if (!res.headersSent) json(res, { error: e.message }, 500); else res.end();
+  }
 });
 
 server.listen(PORT, HOST, () => {

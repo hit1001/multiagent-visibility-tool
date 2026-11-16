@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Cost tracking.** Estimated cost per LLM call, agent and run, shown live in the dashboard and
+  saved with each run. Prices come from a built-in table that `pricing.json` can extend.
+- **Analytics.** A dashboard panel and `GET /analytics`: cost and tokens per agent and model, tool
+  error rates, average and p95 latency, and the agents and tools that take the most time.
+- **New alerts:** run cost budget and slow tool calls. Individual alert types can be muted.
+- **Workflow builder** at `/builder`: design a team of agents by drag and drop, save it, register
+  it on the dashboard, and export registration code. Templates are stored via `/workflows`.
+- **Plugins.** JavaScript files in `<data dir>/plugins/` (or named in `VISIBILITY_PLUGINS`) receive
+  `onRunStart`, `onEvent`, `onRunFinish` and `onAlert`. Examples in `examples/plugins/`.
+- Tutorials, a best-practices guide and `CONTRIBUTING.md`.
+- **SDKs.** `require('agent-visibility/sdk')` for Node.js and `adapters/mavt_sdk.py` for Python.
+- **Docker.** `Dockerfile`, `docker-compose.yml`, a `GET /healthz` endpoint and
+  `VISIBILITY_DATA_DIR` to choose where data is stored.
+- **Encryption at rest.** `VISIBILITY_ENCRYPTION_KEY` encrypts stored event data with AES-256-GCM.
+- Documentation: [API reference](docs/API.md), [deployment](docs/DEPLOYMENT.md), [SDKs](docs/SDK.md).
+
+### Changed
+
+- **Redesigned interface.** The dashboard, workflow builder and sign-in page share one design
+  system with light and dark themes (follows the system setting; switch with the button in the top
+  bar). Run metrics moved to the top, the topology graph is sharp on high-density displays, agents
+  can be selected to see their activity, the Tools tab can be filtered by kind, and alert rules
+  moved into their own dialog.
+- Pages no longer load fonts from Google; nothing is requested from other sites.
+- Replaying a saved run shows each event at the time it happened.
+
+### Security
+
+- Logins expire after 12 hours (`VISIBILITY_SESSION_TTL_HOURS`); previously they lasted until restart.
+- Ten failed logins from one address lock it out for 15 minutes.
+- The audit log now records logins, API key changes, run deletions, alert changes and resets.
+- `VISIBILITY_COOKIE_SECURE=1` marks the session cookie `Secure` for HTTPS deployments.
+- A request that fails unexpectedly returns a 500 instead of stopping the server.
+
+### Changed
+
+- `metrics` in state snapshots and run summaries has a new `cost` field.
+
 ## 0.5.0
 
 A security and reliability release. **Read "Upgrading" before you update.**

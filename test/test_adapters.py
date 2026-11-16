@@ -91,5 +91,28 @@ class LangChainTests(DashboardTest):
         self.assertTrue(run["agents_text"], "agents must be saved under this run")
 
 
+class SdkTests(DashboardTest):
+    def test_sdk_reports_a_run_with_cost_and_tool_timing(self):
+        from mavt_sdk import Visibility
+
+        vis = Visibility(self.url)
+        vis.set_goal("sdk run", run_id="sdk1")
+        vis.register_agent("lead", role="orchestrator", model="claude-sonnet-4-6")
+        vis.log_llm_turn("lead", prompt_tokens=1_000_000, completion_tokens=0, response="ok")
+        with vis.trace_tool("lead", "search", input={"q": "x"}) as call:
+            call.output = ["row"]
+        with self.assertRaises(ValueError):
+            with vis.trace_tool("lead", "broken"):
+                raise ValueError("boom")
+        vis.finish_run()
+
+        state = self.get("/state")
+        self.assertEqual(state["status"], "done")
+        self.assertAlmostEqual(state["metrics"]["cost"], 3.0)  # 1M input tokens at $3/M
+        tools = {i["tool_name"]: i for i in state["internals"] if i["kind"] == "tool_call"}
+        self.assertEqual(tools["search"]["output"], '["row"]')
+        self.assertIn("boom", tools["broken"]["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

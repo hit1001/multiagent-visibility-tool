@@ -1,0 +1,19 @@
+name: Framework integration request
+description: Ask for an adapter for an agent framework
+title: "Adapter: "
+labels: [adapter]
+body:
+  - type: input
+    id: framework
+    attributes: { label: Framework and version }
+    validations: { required: true }
+  - type: textarea
+    id: hooks
+    attributes: { label: How does the framework expose events?, description: Callbacks, listeners, middleware, tracing hooks. Link to its docs if you can. }
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Can you help?
+      options:
+        - label: I can test an adapter against my project
+        - label: I can write the adapter
