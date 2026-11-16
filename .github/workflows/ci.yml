@@ -40,6 +40,20 @@ jobs:
       - run: pip install langchain-core requests
       - run: python test/test_adapters.py -v
 
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: docker build -t agent-visibility .
+      - name: Refuses to start without a password
+        run: |
+          if docker run --rm agent-visibility; then echo "started without a password"; exit 1; fi
+      - name: Starts and passes its health check
+        run: |
+          docker run -d --name mavt -p 4242:4242 -e VISIBILITY_PASSWORD=ci-password agent-visibility
+          for i in $(seq 1 20); do curl -sf localhost:4242/healthz && exit 0; sleep 1; done
+          docker logs mavt; exit 1
+
   package:
     runs-on: ubuntu-latest
     steps:

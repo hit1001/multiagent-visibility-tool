@@ -50,7 +50,7 @@ test('runs do not leak into each other', async t => {
 
   const st = (await request(s.port, { path: '/state' })).json;
   assert.deepStrictEqual(Object.keys(st.registry), ['solo']);
-  assert.deepStrictEqual(st.metrics, { steps: 1, tokens: 0, retries: 0 });
+  assert.deepStrictEqual(st.metrics, { steps: 1, tokens: 0, retries: 0, cost: 0 });
   assert.strictEqual((await request(s.port, { path: '/runs/r2' })).json.agents_text, 'solo');
   assert.strictEqual((await request(s.port, { path: '/runs/r1' })).json.agents_text, 'lead');
   const replay = (await request(s.port, { path: '/runs/r2/state' })).json;

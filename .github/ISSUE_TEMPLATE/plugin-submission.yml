@@ -1,0 +1,21 @@
+name: Plugin submission
+description: Ask for a plugin to be listed in docs/PLUGINS.md
+title: "Plugin: "
+labels: [plugin]
+body:
+  - type: input
+    id: name
+    attributes: { label: Package or plugin name, placeholder: agent-visibility-plugin-example }
+    validations: { required: true }
+  - type: input
+    id: source
+    attributes: { label: Link to the public source code }
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes: { label: What does it do?, description: One or two sentences, and which hooks it uses. }
+    validations: { required: true }
+  - type: textarea
+    id: data
+    attributes: { label: What data does it send, and where?, description: "For example: run summaries to a URL the user configures. Write \"nothing leaves the machine\" if that is the case." }
+    validations: { required: true }

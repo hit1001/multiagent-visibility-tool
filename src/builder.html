@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Workflow Builder · Agent Visibility</title>
+<script>(function(){try{var t=localStorage.getItem('mavt-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}})()</script>
+<style>
+/*__THEME__*/
+
+body{overflow:hidden}
+.app{display:grid;grid-template:48px minmax(0,1fr)/232px minmax(0,1fr) 272px;height:100vh}
+.topbar{grid-column:1/-1;display:flex;align-items:center;gap:8px;padding:0 12px 0 16px;background:var(--surface);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:8px;font-weight:600;letter-spacing:-.01em;text-decoration:none}
+.brand .icon{width:18px;height:18px;stroke-width:2.2;color:var(--accent)}
+.crumb{color:var(--text-3)}
+.crumb::before{content:"/";margin-right:8px;color:var(--line-strong)}
+.name{width:280px;margin-left:8px}
+.spacer{flex:1}
+.sep{width:1px;height:20px;margin:0 4px;background:var(--line)}
+.side{min-height:0;padding:14px 12px;overflow-y:auto;background:var(--surface);border-right:1px solid var(--line)}
+.side.right{padding:14px 16px;border-right:0;border-left:1px solid var(--line)}
+.side h2{margin:0 4px 8px;font-size:12px;font-weight:600;color:var(--text-2)}
+.side h2:not(:first-child){margin-top:20px}
+.side.right h2{margin-left:0}
+.role-btn{display:flex;align-items:center;gap:10px;width:100%;padding:7px 8px;border:0;border-radius:var(--r);background:transparent;text-align:left;text-transform:capitalize;cursor:grab;touch-action:none}
+.role-btn:hover{background:var(--raised)}
+.role-btn .dot{width:8px;height:8px;border-radius:2px}
+.hint{margin:8px 4px 0;font-size:12px;line-height:1.5;color:var(--text-3)}
+.side.right .hint{margin-left:0}
+.saved{display:flex;align-items:center;gap:2px}
+.saved .open{flex:1;min-width:0;padding:6px 8px;border:0;border-radius:var(--r);background:transparent;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.saved .open:hover{background:var(--raised)}
+.saved .open.current{background:var(--raised);font-weight:500}
+.saved .del{display:grid;place-items:center;width:24px;height:24px;border:0;border-radius:var(--r);background:transparent;color:var(--text-3);font-size:16px;line-height:1;cursor:pointer;opacity:0}
+.saved:hover .del,.saved .del:focus-visible{opacity:1}
+.saved .del:hover{color:var(--err);background:var(--raised)}
+.canvas{position:relative;overflow:hidden;background-color:var(--bg);background-image:radial-gradient(var(--line-strong) 1px,transparent 1px);background-size:24px 24px}
+.canvas svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.canvas path.edge{stroke:var(--text-3);stroke-width:1.25;fill:none}
+.canvas path.hit{stroke:transparent;stroke-width:14;fill:none;pointer-events:stroke;cursor:pointer}
+.canvas path.hit:hover + path.edge{stroke:var(--err)}
+.canvas path.draft{stroke:var(--accent);stroke-width:1.5;stroke-dasharray:5 4;fill:none}
+#arrow path{fill:var(--text-3)}
+.empty-canvas{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;text-align:center;pointer-events:none}
+.empty-canvas strong{font-size:14px;font-weight:600}
+.empty-canvas span{color:var(--text-2)}
+.node{position:absolute;width:150px;padding:7px 10px 9px 14px;border:1px solid var(--line-strong);border-radius:8px;background:var(--surface);box-shadow:inset 4px 0 0 var(--c,var(--role-worker));cursor:grab;user-select:none;touch-action:none}
+.node.selected{outline:2px solid var(--accent);outline-offset:3px}
+.node.target{outline:2px solid var(--ok);outline-offset:3px}
+.node .title{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.node .sub{font-size:12px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.node .handle{position:absolute;left:50%;bottom:-7px;width:13px;height:13px;margin-left:-6.5px;border:1.5px solid var(--text-3);border-radius:50%;background:var(--surface);cursor:crosshair}
+.node .handle:hover{border-color:var(--accent);background:var(--accent)}
+.err{min-height:18px;margin-bottom:4px;font-size:12px;color:var(--err)}
+#toast{position:fixed;left:50%;bottom:20px;z-index:150;display:none;transform:translateX(-50%);animation:none;padding:9px 14px;border-left-width:1px}
+#toast.bad{border-color:var(--err);color:var(--err)}
+.dialog-overlay.on{display:flex}
+.tabs{margin-bottom:12px;width:280px}
+#export-text{display:block;width:100%;height:320px;padding:12px;border:1px solid var(--line);border-radius:var(--r);background:var(--bg);font:12px/1.55 var(--mono);resize:vertical;outline:none}
+#export-text:focus{border-color:var(--accent)}
+</style>
+</head>
+<body>
+<!--__ICONS__-->
+<div class="app">
+  <header class="topbar">
+    <a class="brand" href="/" title="Back to the dashboard"><svg class="icon" aria-hidden="true"><use href="#i-logo"/></svg>Agent Visibility</a>
+    <span class="crumb">Workflow builder</span>
+    <input class="input name" id="wf-name" placeholder="Untitled workflow" maxlength="80" aria-label="Workflow name">
+    <div class="spacer"></div>
+    <button class="btn btn-ghost" id="btn-new"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New</button>
+    <button class="btn btn-ghost" id="btn-export"><svg class="icon" aria-hidden="true"><use href="#i-code"/></svg>Export code</button>
+    <i class="sep"></i>
+    <button class="btn" id="btn-save">Save</button>
+    <button class="btn btn-primary" id="btn-apply" title="Save, then register these agents on the dashboard">Apply to dashboard</button>
+  </header>
+  <aside class="side">
+    <h2>Add an agent</h2>
+    <div id="palette"></div>
+    <p class="hint">Drag a role onto the canvas, or click it. To set who reports to whom, drag from the circle under a lead to another agent.</p>
+    <h2>Saved workflows</h2>
+    <div id="saved"><p class="hint">None yet</p></div>
+  </aside>
+  <div class="canvas" id="canvas">
+    <svg id="edges"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z"/></marker></defs></svg>
+    <div class="empty-canvas" id="empty"><strong>Start with a role</strong><span>Drag one from the left. Arrows point from a lead to the agents that report to it.</span></div>
+  </div>
+  <aside class="side right" id="props"></aside>
+</div>
+
+<div class="dialog-overlay" id="export-overlay">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="export-title" style="width:680px">
+    <div class="dialog-head"><h2 id="export-title">Export</h2></div>
+    <div class="dialog-body">
+      <div class="seg tabs" id="export-tabs" role="group" aria-label="Format"></div>
+      <textarea id="export-text" readonly spellcheck="false" aria-label="Exported code"></textarea>
+    </div>
+    <div class="dialog-foot"><button class="btn" id="export-close">Close</button><button class="btn btn-primary" id="export-copy">Copy</button></div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+const ROLES = Object.fromEntries(['orchestrator','researcher','coder','critic','synthesiser','worker'].map(r => [r, `var(--role-${r})`]));
+const NODE_W = 150, NODE_H = 52;
+const $ = id => document.getElementById(id);
+const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+const svgEl = (tag, attrs) => { const e = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; };
+
+let wf = { id: null, name: '', agents: [] };
+let selected = null;   // agent id
+let dirty = false;
+const canvas = $('canvas');
+const byId = id => wf.agents.find(a => a.id === id);
+
+function toast(msg, bad = false) {
+  const t = $('toast'); t.textContent = msg; t.className = 'toast' + (bad ? ' bad' : ''); t.style.display = 'block';
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.style.display = 'none', bad ? 5000 : 2200);
+}
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body && JSON.stringify(body) });
+  if (r.status === 401) { location.href = '/login'; throw new Error('Signed out'); }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || 'Server error ' + r.status);
+  return j;
+}
+const changed = () => { dirty = true; render(); };
+
+// ── Model ─────────────────────────────────────────────────────────────────────
+function uniqueId(base) {
+  if (!byId(base)) return base;
+  for (let n = 2; ; n++) if (!byId(base + '_' + n)) return base + '_' + n;
+}
+function addAgent(role, x, y) {
+  const id = uniqueId(role);
+  const r = canvas.getBoundingClientRect();
+  const n = wf.agents.length;
+  wf.agents.push({
+    id, label: id.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()), role, model: '', reports_to: null, token_budget: null,
+    x: Math.round(Math.max(8, Math.min(r.width - NODE_W - 8, x ?? 60 + (n % 4) * 180))),
+    y: Math.round(Math.max(8, Math.min(r.height - NODE_H - 16, y ?? 50 + Math.floor(n / 4) * 110))),
+  });
+  selected = id; changed();
+}
+function removeAgent(id) {
+  wf.agents = wf.agents.filter(a => a.id !== id);
+  wf.agents.forEach(a => { if (a.reports_to === id) a.reports_to = null; });
+  if (selected === id) selected = null;
+  changed();
+}
+// Would making `child` report to `lead` create a loop?
+function createsLoop(child, lead) {
+  for (let p = lead; p; p = byId(p)?.reports_to) if (p === child) return true;
+  return false;
+}
+function link(lead, child) {
+  if (lead === child) return;
+  if (createsLoop(child, lead)) { toast('That would make a reporting loop', true); return; }
+  byId(child).reports_to = lead; selected = child; changed();
+}
+
+// ── Canvas ────────────────────────────────────────────────────────────────────
+function edgePath(a, b) { // from the bottom of lead a to the top of report b
+  const x1 = a.x + NODE_W / 2, y1 = a.y + NODE_H + 8, x2 = b.x + NODE_W / 2, y2 = b.y - 2;
+  const dy = Math.max(30, Math.abs(y2 - y1) / 2);
+  return `M${x1} ${y1} C${x1} ${y1 + dy},${x2} ${y2 - dy},${x2} ${y2}`;
+}
+function render() {
+  canvas.querySelectorAll('.node').forEach(n => n.remove());
+  const svg = $('edges');
+  svg.querySelectorAll('path:not(marker path)').forEach(p => p.remove());
+  $('empty').style.display = wf.agents.length ? 'none' : 'flex';
+
+  for (const a of wf.agents) {
+    const lead = a.reports_to && byId(a.reports_to);
+    if (!lead) continue;
+    const d = edgePath(lead, a);
+    const hit = svgEl('path', { class: 'hit', d });
+    hit.append(svgEl('title', {}));
+    hit.firstChild.textContent = 'Click to remove this link';
+    hit.addEventListener('click', () => { a.reports_to = null; changed(); });
+    svg.append(hit, svgEl('path', { class: 'edge', d, 'marker-end': 'url(#arrow)' }));
+  }
+  for (const a of wf.agents) {
+    const node = el('div', { className: 'node' + (a.id === selected ? ' selected' : '') },
+      el('div', { className: 'title', textContent: a.label || a.id }),
+      el('div', { className: 'sub', textContent: a.model ? a.role + ' · ' + a.model : a.role }),
+      el('div', { className: 'handle', title: 'Drag to the agent that reports to this one' }));
+    node.dataset.id = a.id;
+    node.style.left = a.x + 'px'; node.style.top = a.y + 'px';
+    node.style.setProperty('--c', ROLES[a.role] || 'var(--role-worker)');
+    node.addEventListener('pointerdown', e => e.target.classList.contains('handle') ? startLink(e, a) : startMove(e, a, node));
+    canvas.append(node);
+  }
+  renderProps();
+  $('btn-save').textContent = dirty ? 'Save changes' : (wf.id ? 'Saved' : 'Save');
+  $('btn-save').disabled = !dirty;
+}
+const nodeAt = (x, y) => document.elementsFromPoint(x, y).find(n => n.classList?.contains('node'))?.dataset.id;
+
+function startMove(e, a, node) {
+  e.preventDefault();
+  const sx = e.clientX, sy = e.clientY, ox = a.x, oy = a.y, r = canvas.getBoundingClientRect();
+  let moved = false;
+  const move = ev => {
+    moved = true;
+    a.x = Math.round(Math.max(0, Math.min(r.width - NODE_W, ox + ev.clientX - sx)));
+    a.y = Math.round(Math.max(0, Math.min(r.height - NODE_H - 10, oy + ev.clientY - sy)));
+    node.style.left = a.x + 'px'; node.style.top = a.y + 'px';
+  };
+  const up = () => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+    selected = a.id; if (moved) dirty = true; render();
+  };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+}
+function startLink(e, lead) {
+  e.preventDefault(); e.stopPropagation();
+  const r = canvas.getBoundingClientRect();
+  const draft = svgEl('path', { class: 'draft' }); $('edges').append(draft);
+  const x1 = lead.x + NODE_W / 2, y1 = lead.y + NODE_H + 8;
+  let over = null;
+  const move = ev => {
+    draft.setAttribute('d', `M${x1} ${y1} L${ev.clientX - r.left} ${ev.clientY - r.top}`);
+    canvas.querySelectorAll('.node.target').forEach(n => n.classList.remove('target'));
+    over = nodeAt(ev.clientX, ev.clientY);
+    if (over && over !== lead.id) canvas.querySelector(`.node[data-id="${CSS.escape(over)}"]`).classList.add('target');
+  };
+  const up = () => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+    draft.remove();
+    if (over && over !== lead.id) link(lead.id, over); else render();
+  };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+}
+
+// ── Palette: click to add, or drag onto the canvas ────────────────────────────
+for (const role of Object.keys(ROLES)) {
+  const chip = el('button', { className: 'role-btn', type: 'button' },
+    el('span', { className: 'dot' }), el('span', { textContent: role }));
+  chip.firstChild.style.background = ROLES[role];
+  chip.addEventListener('pointerdown', e => {
+    if (e.button) return;
+    const sx = e.clientX, sy = e.clientY; let ghost = null;
+    const move = ev => {
+      if (!ghost && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 5) {
+        ghost = el('div', { className: 'node', textContent: role });
+        Object.assign(ghost.style, { position: 'fixed', pointerEvents: 'none', opacity: .85, zIndex: 30, textTransform: 'capitalize', fontWeight: 600 });
+        ghost.style.setProperty('--c', ROLES[role]);
+        document.body.append(ghost);
+      }
+      if (ghost) { ghost.style.left = ev.clientX - NODE_W / 2 + 'px'; ghost.style.top = ev.clientY - NODE_H / 2 + 'px'; }
+    };
+    const up = ev => {
+      removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+      if (!ghost) return; // a plain click: handled below
+      ghost.remove();
+      const r = canvas.getBoundingClientRect();
+      if (ev.clientX > r.left && ev.clientX < r.right && ev.clientY > r.top && ev.clientY < r.bottom) {
+        addAgent(role, ev.clientX - r.left - NODE_W / 2, ev.clientY - r.top - NODE_H / 2);
+      }
+      chip.dataset.dragged = '1';
+    };
+    addEventListener('pointermove', move); addEventListener('pointerup', up);
+  });
+  chip.addEventListener('click', () => { if (chip.dataset.dragged) { delete chip.dataset.dragged; return; } addAgent(role); });
+  $('palette').append(chip);
+}
+
+// ── Properties panel ──────────────────────────────────────────────────────────
+function field(label, input) {
+  input.classList.add(input.tagName === 'SELECT' ? 'select' : 'input');
+  return el('div', { className: 'field' }, el('label', { textContent: label }), input);
+}
+function renderProps() {
+  const p = $('props'); p.replaceChildren();
+  const a = byId(selected);
+  if (!a) {
+    p.append(el('h2', { textContent: 'Agent' }),
+      el('p', { className: 'hint', textContent: wf.agents.length ? 'Select an agent to edit its details.' : 'Add an agent to edit its details here.' }));
+    return;
+  }
+  const err = el('div', { className: 'err' });
+  const idIn = el('input', { value: a.id, maxLength: 40 });
+  idIn.addEventListener('change', () => {
+    const v = idIn.value.trim();
+    if (v === a.id) return;
+    if (!/^[A-Za-z0-9_.-]{1,40}$/.test(v)) { err.textContent = 'Use letters, digits, ".", "_" or "-".'; idIn.value = a.id; return; }
+    if (byId(v)) { err.textContent = 'Another agent already has that id.'; idIn.value = a.id; return; }
+    wf.agents.forEach(o => { if (o.reports_to === a.id) o.reports_to = v; });
+    a.id = v; selected = v; changed();
+  });
+  const bind = (input, key, parse = v => v) => { input.addEventListener('change', () => { a[key] = parse(input.value); changed(); }); return input; };
+  const roleSel = el('select', {}, ...Object.keys(ROLES).map(r => el('option', { value: r, textContent: r, selected: r === a.role })));
+  const leadSel = el('select', {}, el('option', { value: '', textContent: '— nobody —' }),
+    ...wf.agents.filter(o => o.id !== a.id && !createsLoop(a.id, o.id))
+      .map(o => el('option', { value: o.id, textContent: o.label || o.id, selected: o.id === a.reports_to })));
+  const del = el('button', { className: 'btn btn-danger', type: 'button', textContent: 'Delete agent' });
+  del.addEventListener('click', () => removeAgent(a.id));
+  p.append(el('h2', { textContent: 'Agent' }), err,
+    field('Id (the name your code uses)', idIn),
+    field('Label', bind(el('input', { value: a.label, maxLength: 60 }), 'label', v => v.trim() || a.id)),
+    field('Role', bind(roleSel, 'role')),
+    field('Model (used for cost estimates)', bind(el('input', { value: a.model, maxLength: 80, placeholder: 'e.g. claude-sonnet-5-5' }), 'model', v => v.trim())),
+    field('Token budget (optional)', bind(el('input', { type: 'number', min: 0, step: 1000, value: a.token_budget ?? '', placeholder: 'none' }), 'token_budget', v => Number(v) > 0 ? Math.round(Number(v)) : null)),
+    field('Reports to', bind(leadSel, 'reports_to', v => v || null)),
+    del);
+}
+addEventListener('keydown', e => {
+  if ((e.key === 'Delete' || e.key === 'Backspace') && selected && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) { e.preventDefault(); removeAgent(selected); }
+  if (e.key === 'Escape') $('export-overlay').classList.remove('on');
+});
+canvas.addEventListener('pointerdown', e => { if (e.target === canvas || e.target.id === 'empty') { selected = null; render(); } });
+
+// ── Save, load, apply ─────────────────────────────────────────────────────────
+$('wf-name').addEventListener('input', e => { wf.name = e.target.value; dirty = true; $('btn-save').textContent = 'Save changes'; $('btn-save').disabled = false; });
+async function save() {
+  if (!wf.name.trim()) { $('wf-name').focus(); throw new Error('Give the workflow a name first'); }
+  if (!wf.agents.length) throw new Error('Add at least one agent first');
+  const saved = await api('POST', '/workflows', wf);
+  wf.id = saved.id; dirty = false;
+  await loadSaved(); render();
+  return saved;
+}
+$('btn-save').addEventListener('click', () => save().then(() => toast('Saved'), e => toast(e.message, true)));
+$('btn-apply').addEventListener('click', async () => {
+  try {
+    await save();
+    const r = await api('POST', `/workflows/${encodeURIComponent(wf.id)}/apply`);
+    toast(`${r.registered} agent${r.registered === 1 ? '' : 's'} registered on the dashboard`);
+  } catch (e) { toast(e.message, true); }
+});
+$('btn-new').addEventListener('click', () => {
+  if (dirty && !confirm('Discard unsaved changes?')) return;
+  wf = { id: null, name: '', agents: [] }; selected = null; dirty = false; $('wf-name').value = ''; loadSaved(); render();
+});
+async function loadSaved() {
+  let list = [];
+  try { list = await api('GET', '/workflows'); } catch (_) {}
+  const box = $('saved'); box.replaceChildren();
+  if (!list.length) { box.append(el('p', { className: 'hint', textContent: 'None yet' })); return; }
+  for (const w of list) {
+    const open = el('button', { className: 'open' + (w.id === wf.id ? ' current' : ''), type: 'button', textContent: w.name, title: `${w.name} · ${w.agents} agents` });
+    open.addEventListener('click', async () => {
+      if (dirty && !confirm('Discard unsaved changes?')) return;
+      try {
+        const full = await api('GET', '/workflows/' + encodeURIComponent(w.id));
+        wf = { id: full.id, name: full.name, agents: full.agents }; selected = null; dirty = false;
+        $('wf-name').value = wf.name; loadSaved(); render();
+      } catch (e) { toast(e.message, true); }
+    });
+    const del = el('button', { className: 'del', type: 'button', textContent: '×', title: 'Delete ' + w.name });
+    del.setAttribute('aria-label', 'Delete ' + w.name);
+    del.addEventListener('click', async () => {
+      if (!confirm(`Delete "${w.name}"?`)) return;
+      try { await api('DELETE', '/workflows/' + encodeURIComponent(w.id)); if (wf.id === w.id) wf.id = null; loadSaved(); } catch (e) { toast(e.message, true); }
+    });
+    box.append(el('div', { className: 'saved' }, open, del));
+  }
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+// Leads first, so each agent is registered after the one it reports to.
+function ordered() {
+  const depth = a => { let d = 0; for (let p = a.reports_to; p && d < 99; p = byId(p)?.reports_to) d++; return d; };
+  return [...wf.agents].sort((a, b) => depth(a) - depth(b));
+}
+const q = JSON.stringify;
+const EXPORTS = {
+  'Node.js': () => [`const { Visibility } = require('agent-visibility/sdk');`, `const vis = new Visibility();`, ``,
+    ...ordered().map(a => `vis.registerAgent({ id: ${q(a.id)}, label: ${q(a.label)}, role: ${q(a.role)}` +
+      (a.model ? `, model: ${q(a.model)}` : '') + (a.reports_to ? `, reportsTo: ${q(a.reports_to)}` : '') +
+      (a.token_budget ? `, tokenBudget: ${a.token_budget}` : '') + ` });`),
+    ``, `vis.setGoal(${q(wf.name || 'My task')});`, `// ... run your agents, calling vis.logLlmTurn / vis.traceTool as they work ...`, `vis.finishRun();`, `await vis.flush();`].join('\n'),
+  'Python': () => [`from mavt_sdk import Visibility`, ``, `vis = Visibility()`, ``,
+    ...ordered().map(a => `vis.register_agent(${q(a.id)}, label=${q(a.label)}, role=${q(a.role)}` +
+      (a.model ? `, model=${q(a.model)}` : '') + (a.reports_to ? `, reports_to=${q(a.reports_to)}` : '') +
+      (a.token_budget ? `, token_budget=${a.token_budget}` : '') + `)`),
+    ``, `vis.set_goal(${q(wf.name || 'My task')})`, `# ... run your agents, calling vis.log_llm_turn / vis.trace_tool as they work ...`, `vis.finish_run()`].join('\n'),
+  'JSON': () => JSON.stringify({ name: wf.name, agents: ordered().map(({ x, y, ...a }) => a) }, null, 2),
+};
+function showExport(kind) {
+  $('export-text').value = EXPORTS[kind]();
+  [...$('export-tabs').children].forEach(b => b.setAttribute('aria-pressed', String(b.textContent === kind)));
+}
+for (const kind of Object.keys(EXPORTS)) {
+  const b = el('button', { type: 'button', textContent: kind });
+  b.addEventListener('click', () => showExport(kind));
+  $('export-tabs').append(b);
+}
+$('btn-export').addEventListener('click', () => {
+  if (!wf.agents.length) { toast('Add at least one agent first', true); return; }
+  $('export-overlay').classList.add('on'); showExport('Node.js');
+});
+$('export-close').addEventListener('click', () => $('export-overlay').classList.remove('on'));
+$('export-overlay').addEventListener('click', e => { if (e.target === e.currentTarget) e.currentTarget.classList.remove('on'); });
+$('export-copy').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText($('export-text').value); toast('Copied'); }
+  catch (_) { $('export-text').select(); toast('Press Ctrl+C to copy'); }
+});
+addEventListener('beforeunload', e => { if (dirty) e.preventDefault(); });
+
+loadSaved(); render();
+</script>
+</body>
+</html>

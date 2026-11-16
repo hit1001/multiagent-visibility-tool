@@ -11,7 +11,9 @@
     "bin/",
     "src/",
     "adapters/",
-    "agentscope/"
+    "agentscope/",
+    "sdk.js",
+    "examples/"
   ],
   "scripts": {
     "start": "node bin/visibility.js",

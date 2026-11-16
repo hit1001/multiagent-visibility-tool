@@ -3,11 +3,20 @@ const path = require('path');
 const os   = require('os');
 const fs   = require('fs');
 
-let db = null;
+const security = require('./security');
 
-function init() {
+let db = null;
+let encKey = null; // Buffer when VISIBILITY_ENCRYPTION_KEY is set
+
+// Where runs.db, alerts.json and pricing.json live. Override for containers and tests.
+function dataDir() {
+  return process.env.VISIBILITY_DATA_DIR || path.join(os.homedir(), '.agentscope');
+}
+
+function init({ key = null } = {}) {
+  encKey = key;
   const Database = require('better-sqlite3');
-  const dir = path.join(os.homedir(), '.agentscope');
+  const dir = dataDir();
   fs.mkdirSync(dir, { recursive: true });
   db = new Database(path.join(dir, 'runs.db'));
   db.exec(`
@@ -52,6 +61,16 @@ function init() {
       fired_at INTEGER NOT NULL
     );
   `);
+  db.exec(`CREATE TABLE IF NOT EXISTS workflows (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+  // Older databases predate the audit detail column.
+  if (!db.prepare('PRAGMA table_info(audit_log)').all().some(c => c.name === 'detail')) {
+    db.exec('ALTER TABLE audit_log ADD COLUMN detail TEXT');
+  }
   // Clean up runs left in 'running' state with no events — orphaned by server crash or repeated clicks
   db.exec(`DELETE FROM runs WHERE status='running' AND id NOT IN (SELECT DISTINCT run_id FROM run_events)`);
 }
@@ -80,7 +99,7 @@ function appendRunAgent(runId, agentId) {
 function persistEvent(runId, seq, tool, args, ts) {
   if (!db || !runId) return;
   db.prepare('INSERT INTO run_events (run_id, seq, tool, args, ts) VALUES (?,?,?,?,?)')
-    .run(runId, seq, tool, JSON.stringify(args), ts);
+    .run(runId, seq, tool, encKey ? security.encrypt(encKey, JSON.stringify(args)) : JSON.stringify(args), ts);
 }
 
 function listRuns({ q = '', limit = 50, offset = 0 } = {}) {
@@ -111,7 +130,21 @@ function getRun(runId) {
 
 function getRunEvents(runId) {
   if (!db) return [];
-  return db.prepare('SELECT seq, tool, args, ts FROM run_events WHERE run_id=? ORDER BY seq ASC').all(runId);
+  const rows = db.prepare('SELECT seq, tool, args, ts FROM run_events WHERE run_id=? ORDER BY seq ASC').all(runId);
+  for (const r of rows) r.args = security.decrypt(encKey, r.args); // throws if encrypted and the key is missing or wrong
+  return rows;
+}
+
+// Recent runs with their parsed events, for analytics.
+function getRunsWithEvents({ since = 0, limit = 50 } = {}) {
+  if (!db) return [];
+  const runs = db.prepare('SELECT id,goal,status,started_at,finished_at FROM runs WHERE started_at > ? ORDER BY started_at DESC LIMIT ?').all(since, limit);
+  for (const run of runs) {
+    run.events = getRunEvents(run.id).map(e => {
+      try { return { tool: e.tool, args: JSON.parse(e.args), ts: e.ts }; } catch { return { tool: e.tool, args: null, ts: e.ts }; }
+    });
+  }
+  return runs;
 }
 
 function deleteRun(runId) {
@@ -159,10 +192,30 @@ function deleteApiKey(id) {
   db.prepare('DELETE FROM api_keys WHERE id=?').run(id);
 }
 
-// ── Audit log ─────────────────────────────────────────────────────────────────
-function appendAudit(keyId, tool, runId) {
+// ── Workflow templates ────────────────────────────────────────────────────────
+function saveWorkflow(id, name, definition) {
+  db.prepare('INSERT INTO workflows (id,name,definition,updated_at) VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, definition=excluded.definition, updated_at=excluded.updated_at')
+    .run(id, name, JSON.stringify(definition), Date.now());
+}
+function listWorkflows() {
+  if (!db) return [];
+  return db.prepare('SELECT id,name,definition,updated_at FROM workflows ORDER BY updated_at DESC').all()
+    .map(w => ({ id: w.id, name: w.name, updated_at: w.updated_at, agents: JSON.parse(w.definition).agents.length }));
+}
+function getWorkflow(id) {
+  if (!db) return null;
+  const w = db.prepare('SELECT * FROM workflows WHERE id=?').get(id);
+  return w ? { id: w.id, updated_at: w.updated_at, ...JSON.parse(w.definition) } : null;
+}
+function deleteWorkflow(id) {
   if (!db) return;
-  db.prepare('INSERT INTO audit_log (key_id,tool,run_id,ts) VALUES (?,?,?,?)').run(keyId || null, tool, runId || null, Date.now());
+  db.prepare('DELETE FROM workflows WHERE id=?').run(id);
+}
+
+// ── Audit log ─────────────────────────────────────────────────────────────────
+function appendAudit(keyId, tool, runId, detail) {
+  if (!db) return;
+  db.prepare('INSERT INTO audit_log (key_id,tool,run_id,ts,detail) VALUES (?,?,?,?,?)').run(keyId || null, tool, runId || null, Date.now(), detail || null);
 }
 
 function listAudit({ keyId = null, limit = 100, since = 0 } = {}) {
@@ -212,7 +265,7 @@ function getLastRunDurations(limit = 10) {
 }
 
 module.exports = {
-  init, startRun, finishRun, appendRunAgent, persistEvent,
+  init, dataDir, getRunsWithEvents, saveWorkflow, listWorkflows, getWorkflow, deleteWorkflow, startRun, finishRun, appendRunAgent, persistEvent,
   listRuns, getRun, getRunEvents, deleteRun, exportRuns,
   createApiKey, listApiKeys, getApiKeyByHash, touchApiKey, deleteApiKey,
   appendAudit, listAudit,
